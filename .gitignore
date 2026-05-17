@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+
+# local env
+.env
+apps/api/.env
+
+# local storage
+storage/
+
+# build
+apps/web/dist/
+apps/api/dist/
+
+.DS_Store

@@ -1,0 +1,25 @@
+{
+  "name": "task",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "npm run dev -ws",
+    "build": "npm run build -ws",
+    "lint": "npm run lint -ws",
+    "dev:all": "concurrently -n API,WEB -c cyan,magenta \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
+    "install:all": "npm i -ws"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "private": "true",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
