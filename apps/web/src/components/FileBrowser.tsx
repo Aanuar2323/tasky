@@ -131,7 +131,7 @@ export function FileBrowser({
   }
 
   const ordered = useMemo(() => {
-    // folders first (like Finder)
+    // primero carpetas (como en el Finder)
     const dirs = entries.filter((e) => e.type === 'dir');
     const files = entries.filter((e) => e.type === 'file');
     return [...dirs, ...files];

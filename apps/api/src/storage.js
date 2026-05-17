@@ -198,10 +198,10 @@ export async function ensureProjectScaffold(root) {
       }
     }
   } catch {
-    // ignore malformed areas.json
+    // ignorar si areas.json está malformado
   }
 
-  // Create history/areas/{areaId}/files/ for each existing area
+  // Crear history/areas/{areaId}/files/ para cada área existente
   try {
     const raw = await fs.readFile(areasPath, 'utf8');
     const parsed = JSON.parse(raw);
@@ -210,7 +210,7 @@ export async function ensureProjectScaffold(root) {
       await fs.mkdir(path.join(root, 'history', 'areas', area.id, 'files'), { recursive: true });
     }
   } catch {
-    // ignore
+    // ignorar
   }
 }
 

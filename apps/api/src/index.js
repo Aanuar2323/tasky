@@ -7,7 +7,7 @@
  *
  * Arquitectura general:
  *   - Almacenamiento: archivos en disco (storage/) vía storage.js
- *   - IA: NVIDIA NIM API (GLM 5.1) vía nvidia.js
+ *   - IA: NVIDIA NIM API vía nvidia.js
  *   - Persistencia del chat: archivos .jsonl (una línea por mensaje)
  *
  * Prefijo de rutas: /api/projects/:id/...
@@ -17,6 +17,8 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import multer from 'multer';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
@@ -40,16 +42,38 @@ import { nvidiaChat } from './nvidia.js';
 import { generateFile, readFileStructure, editFile, detectFileType } from './generators/index.js';
 
 /* ==========================================================
-   Configuración del servidor Express
+   Configuración del servidor Express y Seguridad
    ========================================================== */
 
 const app = express();
 
-// Permitir peticiones desde otros orígenes (frontend en puerto diferente)
-app.use(cors());
+// 1. Cabeceras de Seguridad HTTP (Protección contra XSS, Clickjacking, etc.)
+app.use(helmet());
+
+// 2. Configuración CORS Restringida (Ideal para producción, cambiar '*' por tu dominio)
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' ? 'https://midominio.com' : '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Parsear cuerpos JSON (límite 10MB para permitir mensajes largos)
 app.use(express.json({ limit: '10mb' }));
+
+// 3. Rate Limiting general (Previene ataques de denegación de servicio - DoS)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 200, // Límite de 200 peticiones por IP
+  message: { error: 'Demasiadas peticiones. Por favor, intenta más tarde.' }
+});
+app.use(limiter);
+
+// 4. Rate Limiting Estricto para endpoints de costos altos (ej. IA)
+export const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hora
+  max: 50, // Límite de 50 chats por hora
+  message: { error: 'Has alcanzado el límite de peticiones de IA por esta hora.' }
+});
 
 // Puerto de escucha (default: 8787)
 const PORT = Number(process.env.PORT ?? 8787);
@@ -662,7 +686,7 @@ app.get('/api/projects/:id/chatlog', async (req, res) => {
  * Body: { messages: Message[], areaId: string, chatId: string, activeTaskPath?: string }
  * Retorna: { id: string, content: string, meta: Object|null }
  */
-app.post('/api/projects/:id/chat', async (req, res) => {
+app.post('/api/projects/:id/chat', aiLimiter, async (req, res) => {
   const projectId = req.params.id;
   const schema = z.object({
     messages: z.array(
@@ -730,28 +754,28 @@ app.post('/api/projects/:id/chat', async (req, res) => {
       `At the end of your message, append EXACTLY ONE line in this format:\n` +
       `TASK_APP_META: {"complete":true|false, "taskPath":string|null, "summary":string}\n` +
       `Only set complete=true if you believe the user's request is fully solved and ready to be moved to history.\n` +
-        `IMPORTANT: A task moves to history only when the user clicks the Completado button in the UI.\n\n` +
-        `FILE GENERATION CAPABILITY:\n` +
-        `When the user asks you to create or edit a file (Excel/Word/PowerPoint/Image), you MUST:\n` +
-        `1. Respond with a clear explanation of what you will generate\n` +
-        `2. Append a TASK_APP_META line with fileGenerated field:\n` +
-        `TASK_APP_META: {"complete":false,"taskPath":null,"summary":"...","fileGenerated":{"type":"xlsx|docx|pptx|png","data":{...},"filename":"suggested-name"}}\n\n` +
-        `For edits, include editPath and editChanges instead of data:\n` +
-        `TASK_APP_META: {"complete":false,"taskPath":null,"summary":"...","fileGenerated":{"type":"xlsx","editPath":"files/generated/abc.xlsx","editChanges":{...},"filename":"edited-name"}}\n\n` +
-        `XLSX data: {sheets:[{name:string,columns:[{header:string,key:string,width?:number}],rows:[{key:value}],styles?:{headerBold:boolean,headerBgColor:string,headerFontColor:string}}]}\n\n` +
-        `DOCX data: {title?:string,sections:[{type:"heading"|"paragraph"|"bullet"|"table"|"image",text?:string,level?:1|2|3,bold?:boolean,italic?:boolean,fontSize?:number,alignment?:"left"|"center"|"right"|"justify",rows?:string[][],imagePath?:string,imageWidth?:number,imageHeight?:number}]}\n\n` +
-        `PPTX data: {title?:string,slides:[{type:"title"|"content"|"bullets"|"table"|"image",title?:string,subtitle?:string,body?:string,bullets?:string[],rows?:string[][],imagePath?:string,notes?:string}]}\n\n` +
-        `PNG chart: {type:"chart",chartType:"bar"|"line"|"pie"|"doughnut",title:string,labels:string[],datasets:[{label:string,data:number[],color?:string}],width?:number,height?:number}\n` +
-        `PNG table: {type:"table",title?:string,headers:string[],rows:string[][],width?:number,height?:number}\n` +
-        `PNG text: {type:"text",title:string,subtitle?:string,body:string,width?:number,height?:number}\n` +
-        `PNG diagram: {type:"diagram",title?:string,nodes:[{id:string,label:string,x:number,y:number}],edges:[{from:string,to:string,label?:string}],width?:number,height?:number}\n` +
-        `PNG edit changes: {resize?:{width,height},crop?:{x,y,width,height},rotate?:number,addText?:[{text,x,y,fontSize,color}],brightness?:number,contrast?:number,grayscale?:boolean,blur?:number,sharpen?:boolean,watermark?:{text,fontSize,color,opacity}}\n\n` +
-        `IMPORTANT LIMITS FOR FILE GENERATION:\n` +
-        `- NEVER generate massive datasets. If the user asks for large datasets (e.g., 'all people you can', 'large sample'), generate ONLY a mock schema with 3 to 5 rows of sample data. Warn the user that LLMs cannot generate large datasets directly and they should run a script or supply data.\n` +
-        `- Maximum 10 rows of data per sheet/table under any circumstance.\n` +
-        `- Keep the TASK_APP_META JSON as compact as possible: no extra whitespace, no comments, no line breaks inside the JSON.\n` +
-        `- Use descriptive filenames in Spanish when appropriate.\n` +
-        `- ALWAYS provide the complete data structure in the fileGenerated field.\n`,
+      `IMPORTANT: A task moves to history only when the user clicks the Completado button in the UI.\n\n` +
+      `FILE GENERATION CAPABILITY:\n` +
+      `When the user asks you to create or edit a file (Excel/Word/PowerPoint/Image), you MUST:\n` +
+      `1. Respond with a clear explanation of what you will generate\n` +
+      `2. Append a TASK_APP_META line with fileGenerated field:\n` +
+      `TASK_APP_META: {"complete":false,"taskPath":null,"summary":"...","fileGenerated":{"type":"xlsx|docx|pptx|png","data":{...},"filename":"suggested-name"}}\n\n` +
+      `For edits, include editPath and editChanges instead of data:\n` +
+      `TASK_APP_META: {"complete":false,"taskPath":null,"summary":"...","fileGenerated":{"type":"xlsx","editPath":"files/generated/abc.xlsx","editChanges":{...},"filename":"edited-name"}}\n\n` +
+      `XLSX data: {sheets:[{name:string,columns:[{header:string,key:string,width?:number}],rows:[{key:value}],styles?:{headerBold:boolean,headerBgColor:string,headerFontColor:string}}]}\n\n` +
+      `DOCX data: {title?:string,sections:[{type:"heading"|"paragraph"|"bullet"|"table"|"image",text?:string,level?:1|2|3,bold?:boolean,italic?:boolean,fontSize?:number,alignment?:"left"|"center"|"right"|"justify",rows?:string[][],imagePath?:string,imageWidth?:number,imageHeight?:number}]}\n\n` +
+      `PPTX data: {title?:string,slides:[{type:"title"|"content"|"bullets"|"table"|"image",title?:string,subtitle?:string,body?:string,bullets?:string[],rows?:string[][],imagePath?:string,notes?:string}]}\n\n` +
+      `PNG chart: {type:"chart",chartType:"bar"|"line"|"pie"|"doughnut",title:string,labels:string[],datasets:[{label:string,data:number[],color?:string}],width?:number,height?:number}\n` +
+      `PNG table: {type:"table",title?:string,headers:string[],rows:string[][],width?:number,height?:number}\n` +
+      `PNG text: {type:"text",title:string,subtitle?:string,body:string,width?:number,height?:number}\n` +
+      `PNG diagram: {type:"diagram",title?:string,nodes:[{id:string,label:string,x:number,y:number}],edges:[{from:string,to:string,label?:string}],width?:number,height?:number}\n` +
+      `PNG edit changes: {resize?:{width,height},crop?:{x,y,width,height},rotate?:number,addText?:[{text,x,y,fontSize,color}],brightness?:number,contrast?:number,grayscale?:boolean,blur?:number,sharpen?:boolean,watermark?:{text,fontSize,color,opacity}}\n\n` +
+      `IMPORTANT LIMITS FOR FILE GENERATION:\n` +
+      `- NEVER generate massive datasets. If the user asks for large datasets (e.g., 'all people you can', 'large sample'), generate ONLY a mock schema with 3 to 5 rows of sample data. Warn the user that LLMs cannot generate large datasets directly and they should run a script or supply data.\n` +
+      `- Maximum 10 rows of data per sheet/table under any circumstance.\n` +
+      `- Keep the TASK_APP_META JSON as compact as possible: no extra whitespace, no comments, no line breaks inside the JSON.\n` +
+      `- Use descriptive filenames in Spanish when appropriate.\n` +
+      `- ALWAYS provide the complete data structure in the fileGenerated field.\n`,
   };
 
   // Llamar a la API de NVIDIA con el historial completo + prompt del sistema
