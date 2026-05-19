@@ -41,6 +41,40 @@ import { nvidiaChat } from './nvidia.js';
 
 import { generateFile, readFileStructure, editFile, detectFileType } from './generators/index.js';
 
+/**
+ * Extrae el texto de un PDF usando pdfjs-dist (ESM nativo).
+ * Itera página a página y concatena el texto completo.
+ * @param {Buffer} buf
+ * @returns {Promise<{text: string, numpages: number}>}
+ */
+async function extractPdfText(buf) {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+
+  const typedArray = new Uint8Array(buf);
+  const loadingTask = pdfjs.getDocument({
+    data: typedArray,
+    disableWorker: true,      // Node.js: sin Web Worker
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  });
+  const pdf = await loadingTask.promise;
+  const numpages = pdf.numPages;
+  const pageTexts = [];
+
+  for (let i = 1; i <= numpages; i++) {
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+    const pageText = textContent.items
+      .map((item) => ('str' in item ? item.str : ''))
+      .join(' ');
+    pageTexts.push(pageText);
+  }
+
+  return { text: pageTexts.join('\n\n'), numpages };
+}
+
+
 /* ==========================================================
    Configuración del servidor Express y Seguridad
    ========================================================== */
@@ -686,8 +720,24 @@ app.get('/api/projects/:id/chatlog', async (req, res) => {
  * Body: { messages: Message[], areaId: string, chatId: string, activeTaskPath?: string }
  * Retorna: { id: string, content: string, meta: Object|null }
  */
-app.post('/api/projects/:id/chat', aiLimiter, async (req, res) => {
+app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), async (req, res) => {
   const projectId = req.params.id;
+
+  // Support both JSON and multipart/form-data
+  const isMultipart = req.is('multipart/form-data');
+  let rawMessages, rawAreaId, rawChatId, rawTaskPath;
+  if (isMultipart) {
+    rawMessages = req.body?.messages;
+    rawAreaId = req.body?.areaId;
+    rawChatId = req.body?.chatId;
+    rawTaskPath = req.body?.activeTaskPath;
+  } else {
+    rawMessages = req.body?.messages;
+    rawAreaId = req.body?.areaId;
+    rawChatId = req.body?.chatId;
+    rawTaskPath = req.body?.activeTaskPath;
+  }
+
   const schema = z.object({
     messages: z.array(
       z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string() })
@@ -696,7 +746,49 @@ app.post('/api/projects/:id/chat', aiLimiter, async (req, res) => {
     chatId: z.string().min(1),
     activeTaskPath: z.string().optional(),
   });
-  const body = schema.parse(req.body ?? {});
+
+  const parsedMessages = typeof rawMessages === 'string' ? JSON.parse(rawMessages) : rawMessages;
+  const body = schema.parse({
+    messages: parsedMessages,
+    areaId: rawAreaId,
+    chatId: rawChatId,
+    activeTaskPath: rawTaskPath,
+  });
+
+  // ── Process uploaded attachments ───────────────────────────
+  const uploadedFiles = /** @type {import('multer').File[]} */ (req.files ?? []);
+  const TEXT_EXTS = /\.(txt|md|markdown|csv|json|jsonl|js|ts|jsx|tsx|py|java|go|rs|c|cpp|h|hpp|css|html|xml|yaml|yml|sh|bash|sql|ini|toml|env)$/i;
+  const attachmentBlocks = [];
+  const attachmentMeta = [];
+
+  for (const file of uploadedFiles) {
+    const name = file.originalname;
+    const mime = file.mimetype ?? '';
+    const isPdf = mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf');
+    const isText = TEXT_EXTS.test(name) || mime.startsWith('text/');
+    attachmentMeta.push({ name, size: file.size, type: mime });
+
+    if (isPdf) {
+      try {
+        const { text, numpages } = await extractPdfText(file.buffer);
+        const excerpt = text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim().slice(0, 20000); // 20 KB cap
+        attachmentBlocks.push(
+          `---\nATTACHED PDF: ${name} (${numpages} page${numpages !== 1 ? 's' : ''}, ${(file.size / 1024).toFixed(1)} KB)\n` +
+          `\`\`\`\n${excerpt}\n\`\`\`\n`
+        );
+      } catch (pdfErr) {
+        console.warn(`pdf-parse failed for ${name}:`, pdfErr?.message);
+        attachmentBlocks.push(`---\nATTACHED PDF: ${name} — could not extract text (encrypted or corrupted file).\n`);
+      }
+    } else if (isText) {
+      const content = file.buffer.toString('utf8').slice(0, 12000); // 12 KB cap
+      attachmentBlocks.push(`---\nATTACHED FILE: ${name}\n\`\`\`\n${content}\n\`\`\`\n`);
+    } else if (mime.startsWith('image/')) {
+      attachmentBlocks.push(`---\nATTACHED IMAGE: ${name} (${(file.size / 1024).toFixed(1)} KB) — text-only model, cannot display image content.\n`);
+    } else {
+      attachmentBlocks.push(`---\nATTACHED BINARY FILE: ${name} (${(file.size / 1024).toFixed(1)} KB, type: ${mime || 'unknown'}) — binary content not readable by LLM. Reference by filename only.\n`);
+    }
+  }
 
   const root = projectRoot({ userId: USER_ID, projectId });
   await ensureProjectScaffold(root);
@@ -716,6 +808,7 @@ app.post('/api/projects/:id/chat', aiLimiter, async (req, res) => {
       ts: Date.now(),
       role: 'user',
       content: lastUser.content,
+      attachments: attachmentMeta.length ? attachmentMeta : undefined,
     });
   }
 
@@ -749,6 +842,9 @@ app.post('/api/projects/:id/chat', aiLimiter, async (req, res) => {
       (activeTask
         ? `ACTIVE TASK (if you mark complete, you MUST use this taskPath):\n${activeTask}\n\n`
         : `ACTIVE TASK: none selected. If you mark complete, set taskPath=null unless the user explicitly referenced a task file.\n\n`) +
+      (attachmentBlocks.length
+        ? `USER ATTACHMENTS (${attachmentBlocks.length} file(s) — analyze them as requested):\n${attachmentBlocks.join('\n')}\n\n`
+        : '') +
       `LAYER 3 (QA/testing):\n${layer3}\n\n` +
       `Return normal markdown for the user.\n` +
       `At the end of your message, append EXACTLY ONE line in this format:\n` +

@@ -49,8 +49,6 @@ export async function nvidiaChat({ messages, temperature = 0.2 }) {
   if (!NVIDIA_API_KEY) throw new Error('Missing NVIDIA_API_KEY');
 
   const MAX_RETRIES = 2;
-  const TIMEOUT_MS = 180_000; // 180 segundos — respuestas con JSON de archivos pueden tardar >60s
-
   let lastError;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -67,7 +65,6 @@ export async function nvidiaChat({ messages, temperature = 0.2 }) {
           messages,
           temperature,
         }),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
       });
 
       // Si la API devuelve un error (401, 429, 500, etc.), lanzar excepción con detalles
@@ -89,10 +86,9 @@ export async function nvidiaChat({ messages, temperature = 0.2 }) {
     } catch (err) {
       lastError = err;
 
-      // No reintentar errores de cliente (4xx), timeouts, ni si ya agotamos reintentos
+      // No reintentar errores de cliente (4xx) ni si ya agotamos reintentos
       const isClientError = err.message?.includes('NVIDIA API error 4');
-      const isTimeout = err.name === 'TimeoutError';
-      if (isClientError || isTimeout || attempt >= MAX_RETRIES) break;
+      if (isClientError || attempt >= MAX_RETRIES) break;
 
       // Esperar antes de reintentar (backoff exponencial: 1s, 2s)
       const delay = 1000 * (attempt + 1);
@@ -102,11 +98,9 @@ export async function nvidiaChat({ messages, temperature = 0.2 }) {
   }
 
   // Si todos los reintentos fallaron, lanzar el último error con contexto claro
-  const msg = lastError?.name === 'TimeoutError'
-    ? `NVIDIA API timeout after ${TIMEOUT_MS / 1000}s — the request took too long`
-    : lastError?.cause?.code === 'ECONNREFUSED' || lastError?.cause?.code === 'ENOTFOUND'
-      ? `Cannot reach NVIDIA API (${lastError.cause.code}) — check your internet connection`
-      : `NVIDIA API error: ${lastError?.message ?? 'unknown'}`;
+  const msg = lastError?.cause?.code === 'ECONNREFUSED' || lastError?.cause?.code === 'ENOTFOUND'
+    ? `Cannot reach NVIDIA API (${lastError.cause.code}) — check your internet connection`
+    : `NVIDIA API error: ${lastError?.message ?? 'unknown'}`;
 
   throw new Error(msg);
 }
