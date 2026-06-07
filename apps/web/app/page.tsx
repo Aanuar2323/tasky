@@ -12,29 +12,16 @@ import {
   getAreas,
   updateAreas,
   getChatLog,
-  sendMessage,
+  sendMessageStream,
   getRules,
   getTree,
   getGeneratedHistory,
   downloadFile,
   addToHistory,
+  deleteFile,
 } from "./lib/api";
 import type { Area, ChatLogEntry, TreeEntry } from "./lib/api";
-
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-  ts?: number;
-  file?: {
-    name: string;
-    meta: string;
-    type?: string;
-    url?: string;
-  };
-  meta?: {
-    complete?: boolean;
-  };
-}
+import type { ChatMessage } from "./types/chat";
 
 export default function Home() {
   const [projectId, setProjectId] = useState<string>("");
@@ -51,6 +38,7 @@ export default function Home() {
   const [treeEntries, setTreeEntries] = useState<TreeEntry[]>([]);
   const [generatedHistory, setGeneratedHistory] = useState<unknown>(null);
   const [rulesContent, setRulesContent] = useState<string>("");
+  const sidePanelCacheRef = useRef<Map<string, { tree?: TreeEntry[]; history?: unknown; rules?: string }>>(new Map());
 
   const loadChatLog = useCallback(
     async (pId: string, aId: string, cId: string) => {
@@ -74,26 +62,43 @@ export default function Home() {
 
   const loadSidePanelData = useCallback(
     async (pId: string, aId: string, tab: "info" | "historial" | "reglas") => {
+      const cacheKey = `${pId}:${aId}`;
+      const cached = sidePanelCacheRef.current.get(cacheKey) ?? {};
       if (tab === "info") {
+        if (cached.tree) {
+          setTreeEntries(cached.tree);
+          return;
+        }
         try {
           const { entries } = await getTree(pId, undefined, aId);
           setTreeEntries(entries);
+          sidePanelCacheRef.current.set(cacheKey, { ...cached, tree: entries });
         } catch {
           setTreeEntries([]);
         }
       }
       if (tab === "historial") {
+        if (cached.history) {
+          setGeneratedHistory(cached.history);
+          return;
+        }
         try {
           const hist = await getGeneratedHistory(pId, aId);
           setGeneratedHistory(hist);
+          sidePanelCacheRef.current.set(cacheKey, { ...cached, history: hist });
         } catch {
           setGeneratedHistory(null);
         }
       }
       if (tab === "reglas") {
+        if (typeof cached.rules === "string") {
+          setRulesContent(cached.rules);
+          return;
+        }
         try {
           const { content } = await getRules(pId, aId);
           setRulesContent(content);
+          sidePanelCacheRef.current.set(cacheKey, { ...cached, rules: content });
         } catch {
           setRulesContent("");
         }
@@ -154,7 +159,10 @@ export default function Home() {
       const area = areas.find((a) => a.id === areaId);
       const cId = area?.activeChatId || area?.chats?.[0]?.id || "";
       setActiveChatId(cId);
+      const nextAreas = areas.map((a) => (a.id === areaId ? { ...a, activeChatId: cId || a.activeChatId } : a));
+      setAreas(nextAreas);
       setSidePanelOpen(false);
+      await updateAreas(projectId, { areas: nextAreas, activeAreaId: areaId });
       if (cId) {
         await loadChatLog(projectId, areaId, cId);
       } else {
@@ -195,10 +203,15 @@ export default function Home() {
       if (!projectId) return;
       setActiveAreaId(areaId);
       setActiveChatId(chatId);
+      const updatedAreas = areas.map((a) =>
+        a.id === areaId ? { ...a, activeChatId: chatId } : a
+      );
+      setAreas(updatedAreas);
       setSidePanelOpen(false);
+      await updateAreas(projectId, { areas: updatedAreas, activeAreaId: areaId });
       await loadChatLog(projectId, areaId, chatId);
     },
-    [projectId, loadChatLog]
+    [projectId, areas, loadChatLog]
   );
 
   const handleAddChat = useCallback(
@@ -314,39 +327,62 @@ export default function Home() {
       ts: Date.now(),
     };
 
-    const currentText = inputText;
-    setChatMessages((prev) => [...prev, userMsg]);
     setInputText("");
     setLoading(true);
+
+    const streamingPlaceholder: ChatMessage = {
+      role: "assistant",
+      content: "",
+      ts: Date.now(),
+    };
+    setChatMessages((prev) => [...prev, userMsg, streamingPlaceholder]);
 
     const allMessages = [...chatMessages, userMsg].map((m) => ({
       role: m.role,
       content: m.content,
     }));
 
-    sendMessage(projectId, {
+    sendMessageStream(projectId, {
       messages: allMessages,
       areaId: activeAreaId,
       chatId: activeChatId,
+    }, (delta) => {
+      setChatMessages((prev) => {
+        const next = [...prev];
+        const idx = next.length - 1;
+        if (idx < 0 || next[idx].role !== "assistant") return prev;
+        next[idx] = { ...next[idx], content: `${next[idx].content}${delta}` };
+        return next;
+      });
     })
       .then((res) => {
-        const assistantMsg: ChatMessage = {
-          role: "assistant",
-          content: res.content,
-          ts: Date.now(),
-          file: res.file as ChatMessage["file"],
-          meta: res.meta as ChatMessage["meta"],
-        };
-        setChatMessages((prev) => [...prev, assistantMsg]);
+        setChatMessages((prev) => {
+          const next = [...prev];
+          const idx = next.length - 1;
+          if (idx < 0 || next[idx].role !== "assistant") return prev;
+          next[idx] = {
+            ...next[idx],
+            content: res.content,
+            file: res.file as ChatMessage["file"],
+            meta: res.meta as ChatMessage["meta"],
+            ts: Date.now(),
+          };
+          return next;
+        });
       })
       .catch((err) => {
         console.error("Send failed:", err);
-        const errorMsg: ChatMessage = {
-          role: "assistant",
-          content: "Error al enviar el mensaje. Intenta de nuevo.",
-          ts: Date.now(),
-        };
-        setChatMessages((prev) => [...prev, errorMsg]);
+        setChatMessages((prev) => {
+          const next = [...prev];
+          const idx = next.length - 1;
+          if (idx < 0 || next[idx].role !== "assistant") return prev;
+          next[idx] = {
+            ...next[idx],
+            content: "Error al enviar el mensaje. Intenta de nuevo.",
+            ts: Date.now(),
+          };
+          return next;
+        });
       })
       .finally(() => {
         setLoading(false);
@@ -378,6 +414,9 @@ export default function Home() {
         const { updateRules } = await import("./lib/api");
         await updateRules(projectId, markdown, activeAreaId);
         setRulesContent(markdown);
+        const key = `${projectId}:${activeAreaId}`;
+        const cached = sidePanelCacheRef.current.get(key) ?? {};
+        sidePanelCacheRef.current.set(key, { ...cached, rules: markdown });
       } catch (err) {
         console.error("Update rules failed:", err);
       }
@@ -400,6 +439,51 @@ export default function Home() {
     };
     input.click();
   }, [projectId]);
+
+  const handleUploadContextFile = useCallback(async () => {
+    if (!projectId || !activeAreaId) return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      try {
+        const { uploadFile } = await import("./lib/api");
+        await uploadFile(projectId, file, `ai/layer2/areas/${activeAreaId}`);
+        const key = `${projectId}:${activeAreaId}`;
+        const cached = sidePanelCacheRef.current.get(key) ?? {};
+        sidePanelCacheRef.current.set(key, { ...cached, tree: undefined });
+        await loadSidePanelData(projectId, activeAreaId, "info");
+      } catch (err) {
+        console.error("Upload context failed:", err);
+      }
+    };
+    input.click();
+  }, [projectId, activeAreaId, loadSidePanelData]);
+
+  const handleDeleteContextFile = useCallback(
+    async (filePath: string) => {
+      if (!projectId || !activeAreaId) return;
+      try {
+        await deleteFile(projectId, filePath);
+        const key = `${projectId}:${activeAreaId}`;
+        const cached = sidePanelCacheRef.current.get(key) ?? {};
+        sidePanelCacheRef.current.set(key, { ...cached, tree: undefined });
+        await loadSidePanelData(projectId, activeAreaId, "info");
+      } catch (err) {
+        console.error("Delete context failed:", err);
+      }
+    },
+    [projectId, activeAreaId, loadSidePanelData]
+  );
+
+  const handleRefreshInfo = useCallback(async () => {
+    if (!projectId || !activeAreaId) return;
+    const key = `${projectId}:${activeAreaId}`;
+    const cached = sidePanelCacheRef.current.get(key) ?? {};
+    sidePanelCacheRef.current.set(key, { ...cached, tree: undefined });
+    await loadSidePanelData(projectId, activeAreaId, "info");
+  }, [projectId, activeAreaId, loadSidePanelData]);
 
   const handleDownload = useCallback(
     async (file: ChatMessage["file"]) => {
@@ -482,12 +566,16 @@ export default function Home() {
             open={sidePanelOpen}
             tab={sidePanelTab}
             area={activeArea || null}
+            projectId={projectId}
             treeEntries={treeEntries}
             generatedHistory={generatedHistory}
             rulesContent={rulesContent}
             onChangeTab={handleChangeSidePanelTab}
             onClose={handleCloseSidePanel}
             onUpdateRules={handleUpdateRules}
+            onRefreshInfo={handleRefreshInfo}
+            onUploadContextFile={handleUploadContextFile}
+            onDeleteContextFile={handleDeleteContextFile}
           />
           <ChatPanel
             areaName={activeAreaName}

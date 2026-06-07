@@ -42,6 +42,14 @@ export function getStorageRoot() {
   return STORAGE_ROOT;
 }
 
+const scaffoldEnsured = new Set();
+
+export async function ensureProjectScaffoldCached(root) {
+  if (scaffoldEnsured.has(root)) return;
+  await ensureProjectScaffold(root);
+  scaffoldEnsured.add(root);
+}
+
 /* ==========================================================
    Utilidades de rutas y seguridad
    ========================================================== */

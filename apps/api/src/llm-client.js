@@ -425,3 +425,94 @@ export async function llmChat({ messages, temperature = 0.2, tools = undefined }
 
 // Alias de compatibilidad con el nombre original
 export { llmChat as nvidiaChat };
+
+/* ==========================================================
+   STREAMING — Para frontend en tiempo real
+   ========================================================== */
+
+/**
+ * Realiza una petición streaming a /chat/completions.
+ * Envia SSE (Server-Sent Events) al frontend. El modelo usado en streaming
+ * NO returna JSON estricto (sin response_format), usa texto libre.
+ *
+ * @param {Object} params
+ * @param {Array}  params.messages       — Historial de mensajes (incluye system)
+ * @param {number} [params.temperature]  — Temperatura (default: 0.7)
+ * @param {number} [params.maxTokens]    — Máximo de tokens (default: 4096)
+ * @param {Function} params.onChunk      — Callback por cada fragmento recibido
+ * @returns {{fullContent: string, stopped: boolean}}
+ */
+export async function llmChatStream({ messages, temperature = 0.7, maxTokens = 4096, onChunk }) {
+  if (PROVIDER === 'none' || !API_KEY || /your_.*_key_here/i.test(API_KEY)) {
+    throw new Error(
+      'API key no configurada. Edita apps/api/.env y define OPENROUTER_API_KEY (o NVIDIA_API_KEY).'
+    );
+  }
+
+  const body = {
+    model: MODEL,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+    stream: true,
+  };
+
+  const res = await fetch(`${BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: buildHeaders(),
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const kind = classifyError(res.status, text);
+    const err = new Error(`[STREAM] [${res.status}] ${text.slice(0, 600)}`);
+    err.kind = kind;
+    err.status = res.status;
+    throw err;
+  }
+
+  const reader = res.body?.getReader();
+  const decoder = new TextDecoder();
+  let fullContent = '';
+  let done = false;
+
+  if (!reader) {
+    throw new Error('No se pudo obtener el reader del stream');
+  }
+
+  try {
+    while (!done) {
+      const { value, done: readerDone } = await reader.read();
+      done = readerDone;
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === 'data: [DONE]') continue;
+        if (!trimmed.startsWith('data: ')) continue;
+
+        const dataStr = trimmed.slice(6);
+        if (dataStr === '[DONE]') continue;
+
+        try {
+          const data = JSON.parse(dataStr);
+          const delta = data.choices?.[0]?.delta?.content || '';
+          if (delta) {
+            fullContent += delta;
+            onChunk(delta);
+          }
+        } catch {
+          // Ignorar líneas malformadas del stream
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return { fullContent, stopped: false };
+}

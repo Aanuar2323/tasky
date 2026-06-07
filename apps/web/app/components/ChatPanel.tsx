@@ -1,21 +1,8 @@
 "use client";
 
-import { useRef, useEffect } from "react";
-
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-  ts?: number;
-  file?: {
-    name: string;
-    meta: string;
-    type?: string;
-    url?: string;
-  };
-  meta?: {
-    complete?: boolean;
-  };
-}
+import { memo, useRef, useEffect } from "react";
+import MarkdownRenderer from "./MarkdownRenderer";
+import type { ChatMessage } from "../types/chat";
 
 interface ChatPanelProps {
   areaName: string;
@@ -46,7 +33,7 @@ const DL_SVG = (
   </svg>
 );
 
-export default function ChatPanel({
+function ChatPanel({
   areaName,
   chatName,
   messages,
@@ -56,9 +43,24 @@ export default function ChatPanel({
   onDownload,
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
 
   useEffect(() => {
-    if (scrollRef.current) {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const onScroll = () => {
+      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      shouldAutoScrollRef.current = distanceToBottom < 48;
+    };
+
+    el.addEventListener("scroll", onScroll);
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (scrollRef.current && shouldAutoScrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, loading]);
@@ -87,7 +89,7 @@ export default function ChatPanel({
                   msg.content
                 ) : (
                   <div className="content">
-                    <div dangerouslySetInnerHTML={{ __html: msg.content }} />
+                    <MarkdownRenderer content={msg.content} />
 
                     {msg.file && (
                       <div style={{ marginTop: 10 }}>
@@ -147,3 +149,5 @@ export default function ChatPanel({
     </div>
   );
 }
+
+export default memo(ChatPanel);

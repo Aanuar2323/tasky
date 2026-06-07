@@ -28,6 +28,7 @@ import fs from 'node:fs/promises';
 
 import {
   ensureProjectScaffold,
+  ensureProjectScaffoldCached,
   listDir,
   readTextFile,
   writeTextFile,
@@ -38,7 +39,7 @@ import {
   safeJoin,
 } from './storage.js';
 
-import { nvidiaChat, getAvailableProviders, setProvider } from './llm-client.js';
+import { nvidiaChat, llmChatStream, getAvailableProviders, setProvider } from './llm-client.js';
 
 import { generateFile, readFileStructure, editFile, detectFileType } from './generators/index.js';
 
@@ -247,6 +248,23 @@ function pickRelevantFiles(prompt, files, max = 3) {
   return (scored.length ? scored : files).slice(0, max);
 }
 
+async function loadAreasConfig(root) {
+  const raw = await readTextFile(root, 'info/areas.json');
+  const parsed = JSON.parse(raw);
+  const areas = Array.isArray(parsed?.areas) ? parsed.areas : [];
+  return { parsed, areas };
+}
+
+function areaExists(areas, areaId) {
+  return areas.some((area) => area?.id === areaId);
+}
+
+function chatExists(areas, areaId, chatId) {
+  const area = areas.find((item) => item?.id === areaId);
+  if (!area) return false;
+  return Array.isArray(area.chats) && area.chats.some((chat) => chat?.id === chatId);
+}
+
 /* ==========================================================
    RUTAS DE LA API
    ========================================================== */
@@ -331,7 +349,15 @@ app.get('/api/projects/:id/tree', async (req, res) => {
   const areaId = String(req.query.areaId ?? '');
   const relPath = String(req.query.path ?? '');
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
+
+  if (areaId) {
+    const { areas } = await loadAreasConfig(root);
+    if (!areaExists(areas, areaId)) {
+      return res.status(404).json({ error: 'area not found' });
+    }
+  }
+
   const dir = areaId
     ? (relPath ? `ai/layer2/areas/${areaId}/${relPath}` : `ai/layer2/areas/${areaId}`)
     : (relPath || '');
@@ -349,7 +375,7 @@ app.get('/api/projects/:id/file', async (req, res) => {
   const projectId = req.params.id;
   const relPath = String(req.query.path ?? '');
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
   const content = await readTextFile(root, relPath);
   res.json({ content });
 });
@@ -365,7 +391,7 @@ app.post('/api/projects/:id/file', async (req, res) => {
   const schema = z.object({ path: z.string().min(1), content: z.string() });
   const body = schema.parse(req.body ?? {});
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
   await writeTextFile(root, body.path, body.content);
   res.json({ ok: true });
 });
@@ -381,7 +407,7 @@ app.delete('/api/projects/:id/file', async (req, res) => {
   const schema = z.object({ path: z.string().min(1) });
   const body = schema.parse(req.body ?? {});
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
   await deletePath(root, body.path);
   res.json({ ok: true });
 });
@@ -396,7 +422,7 @@ app.delete('/api/projects/:id/file', async (req, res) => {
 app.get('/api/projects/:id/areas', async (req, res) => {
   const projectId = req.params.id;
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
   const content = await readTextFile(root, 'info/areas.json');
   res.json(JSON.parse(content));
 });
@@ -425,10 +451,10 @@ app.put('/api/projects/:id/areas', async (req, res) => {
   });
   const body = schema.parse(req.body ?? {});
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
   await writeTextFile(root, 'info/areas.json', JSON.stringify(body, null, 2));
   // Re-escaffold AI layer2 para nuevas áreas
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
   res.json({ ok: true });
 });
 
@@ -445,7 +471,7 @@ app.delete('/api/projects/:id/chat', async (req, res) => {
   const body = schema.parse(req.body ?? {});
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   const areasRaw = await readTextFile(root, 'info/areas.json');
   const cfg = JSON.parse(areasRaw);
@@ -479,7 +505,7 @@ app.delete('/api/projects/:id/area', async (req, res) => {
   const body = schema.parse(req.body ?? {});
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   const areasRaw = await readTextFile(root, 'info/areas.json');
   const cfg = JSON.parse(areasRaw);
@@ -512,7 +538,7 @@ app.post('/api/projects/:id/upload', upload.single('file'), async (req, res) => 
   if (!req.file) return res.status(400).json({ error: 'file required' });
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   const fileName = req.file.originalname;
   const relPath = path.posix.join(relDir.split(path.sep).join(path.posix.sep), fileName);
@@ -533,7 +559,7 @@ app.get('/api/projects/:id/download', async (req, res) => {
   if (!relPath) return res.status(400).json({ error: 'path required' });
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   const abs = safeJoin(root, relPath);
   return res.download(abs);
@@ -555,7 +581,7 @@ app.post('/api/projects/:id/generate', async (req, res) => {
   const body = schema.parse(req.body ?? {});
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   const outputDir = path.join(root, 'files', 'generated');
   let result;
@@ -630,7 +656,7 @@ app.post('/api/projects/:id/add-to-history', async (req, res) => {
   const body = schema.parse(req.body ?? {});
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   const srcAbs = safeJoin(root, body.filePath);
 
@@ -662,7 +688,7 @@ app.get('/api/projects/:id/generated-history', async (req, res) => {
   if (!areaId) return res.status(400).json({ error: 'areaId required' });
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   const relDir = `history/areas/${areaId}/files`;
   try {
@@ -684,7 +710,15 @@ app.get('/api/projects/:id/rules', async (req, res) => {
   const projectId = req.params.id;
   const areaId = String(req.query.areaId ?? '');
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
+
+  if (areaId) {
+    const { areas } = await loadAreasConfig(root);
+    if (!areaExists(areas, areaId)) {
+      return res.status(404).json({ error: 'area not found' });
+    }
+  }
+
   const relPath = areaId ? `ai/layer2/areas/${areaId}/rules.md` : 'rules.md';
   const content = await readOptional(root, relPath);
   res.json({ content });
@@ -703,7 +737,15 @@ app.put('/api/projects/:id/rules', async (req, res) => {
   const schema = z.object({ markdown: z.string(), areaId: z.string().optional() });
   const body = schema.parse(req.body ?? {});
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
+
+  if (body.areaId) {
+    const { areas } = await loadAreasConfig(root);
+    if (!areaExists(areas, body.areaId)) {
+      return res.status(404).json({ error: 'area not found' });
+    }
+  }
+
   const relPath = body.areaId ? `ai/layer2/areas/${body.areaId}/rules.md` : 'rules.md';
   await writeTextFile(root, relPath, body.markdown);
   res.json({ ok: true });
@@ -723,7 +765,7 @@ app.post('/api/projects/:id/tasks', async (req, res) => {
   const schema = z.object({ title: z.string().min(1).max(120), body: z.string().optional() });
   const body = schema.parse(req.body ?? {});
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   // Generar nombre de archivo seguro (sin caracteres especiales)
   const safeTitle = body.title.replace(/[^a-zA-Z0-9-_ ]/g, '').trim().replace(/\s+/g, '_');
@@ -750,7 +792,13 @@ app.get('/api/projects/:id/chatlog', async (req, res) => {
   if (!areaId || !chatId) return res.status(400).json({ error: 'areaId and chatId required' });
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
+
+  const { areas } = await loadAreasConfig(root);
+  if (!chatExists(areas, areaId, chatId)) {
+    return res.status(404).json({ error: 'areaId/chatId not found' });
+  }
+
   const rel = `chat/areas/${areaId}/${chatId}.jsonl`;
 
   try {
@@ -852,13 +900,18 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
   }
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
+
+  const { areas } = await loadAreasConfig(root);
+  if (!chatExists(areas, body.areaId, body.chatId)) {
+    return res.status(404).json({ error: 'areaId/chatId not found' });
+  }
 
   // Leer las reglas del proyecto para incluirlas en el prompt del sistema
-  const rules = await readOptional(root, `ai/layer2/areas/${areaId}/rules.md`);
   const activeTask = body.activeTaskPath;
   const areaId = body.areaId;
   const chatId = body.chatId;
+  const rules = await readOptional(root, `ai/layer2/areas/${areaId}/rules.md`);
   const chatLogRel = `chat/areas/${areaId}/${chatId}.jsonl`;
 
   // Guardar el último mensaje del usuario en el historial persistente (.jsonl)
@@ -1038,6 +1091,114 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
   }
 });
 
+// ── Chat Streaming ────────────────────────────────────────
+
+/**
+ * POST /api/projects/:id/chat/stream
+ * Streaming SSE version of /chat. Sends text deltas in real-time,
+ * then a final "done" event with the structured response.
+ */
+app.post('/api/projects/:id/chat/stream', aiLimiter, async (req, res) => {
+  const projectId = req.params.id;
+  const schema = z.object({
+    messages: z.array(
+      z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string() })
+    ),
+    areaId: z.string().min(1),
+    chatId: z.string().min(1),
+    activeTaskPath: z.string().optional(),
+  });
+  const body = schema.parse(req.body ?? {});
+
+  const root = projectRoot({ userId: USER_ID, projectId });
+  await ensureProjectScaffoldCached(root);
+
+  const { areas } = await loadAreasConfig(root);
+  if (!chatExists(areas, body.areaId, body.chatId)) {
+    return res.status(404).json({ error: 'areaId/chatId not found' });
+  }
+
+  const activeTask = body.activeTaskPath;
+  const areaId = body.areaId;
+  const chatId = body.chatId;
+  const chatLogRel = `chat/areas/${areaId}/${chatId}.jsonl`;
+
+  const lastUser = [...body.messages].reverse().find((m) => m.role === 'user');
+  if (lastUser) {
+    await appendJsonl(path.join(root, chatLogRel), {
+      id: nanoid(12),
+      ts: Date.now(),
+      role: 'user',
+      content: lastUser.content,
+    });
+  }
+
+  const layer1 = await readOptional(root, 'ai/layer1/00-role-and-flow.md');
+  const layer2Summary = await readOptional(root, 'ai/layer2/summary.md');
+  const areaSummary = await readOptional(root, `ai/layer2/areas/${areaId}/summary.md`);
+  const layer3 = await readOptional(root, 'ai/layer3/qa.md');
+  const rules = await readOptional(root, `ai/layer2/areas/${areaId}/rules.md`);
+
+  const system = {
+    role: 'system',
+    content:
+      `You are an assistant inside a file-based task app.\n\n` +
+      `LAYER 1 (role + execution order):\n${layer1}\n\n` +
+      `LAYER 2 (global summary):\n${layer2Summary}\n\n` +
+      `LAYER 2 (area summary - ${areaId}):\n${areaSummary}\n\n` +
+      `RULES (markdown):\n${rules}\n\n` +
+      (activeTask
+        ? `ACTIVE TASK: ${activeTask}\n\n`
+        : `ACTIVE TASK: none.\n\n`) +
+      `LAYER 3 (QA/testing):\n${layer3}\n\n` +
+      `Respond in markdown. Be direct and helpful.`,
+  };
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const sendSSE = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const { fullContent } = await llmChatStream({
+      messages: [system, ...body.messages],
+      temperature: 0.7,
+      onChunk: (delta) => {
+        sendSSE({ type: 'chunk', delta });
+      },
+    });
+
+    const { cleanText, meta } = parseMetaFromAssistant(fullContent);
+    const content = cleanText || fullContent;
+    const messageId = nanoid(12);
+    const ts = Date.now();
+
+    await appendJsonl(path.join(root, chatLogRel), {
+      id: messageId,
+      ts,
+      role: 'assistant',
+      content,
+      meta,
+    });
+
+    sendSSE({ type: 'done', id: messageId, content, meta, file: null });
+  } catch (chatErr) {
+    console.error('Stream error:', chatErr);
+    sendSSE({
+      type: 'error',
+      error: chatErr?.message ?? 'Error comunicándose con la IA',
+      kind: chatErr?.kind ?? 'unknown',
+    });
+  } finally {
+    res.end();
+  }
+});
+
 // ── Completar tarea ────────────────────────────────────────
 
 /**
@@ -1054,7 +1215,7 @@ app.post('/api/projects/:id/complete', async (req, res) => {
   const body = schema.parse(req.body ?? {});
 
   const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffold(root);
+  await ensureProjectScaffoldCached(root);
 
   // Validar que la tarea esté en inbox (no se pueden completar tareas ya en history)
   if (!body.taskPath.startsWith('tasks/inbox/')) {

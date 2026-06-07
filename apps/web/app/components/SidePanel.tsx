@@ -3,17 +3,22 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Area, TreeEntry } from "@/app/lib/api";
 import { downloadFile } from "@/app/lib/api";
+import { parseRulesMarkdown, rulesToMarkdown } from "@/app/lib/rules-parser";
 
 interface SidePanelProps {
   open: boolean;
   tab: "info" | "historial" | "reglas";
   area: Area | null;
+  projectId: string;
   treeEntries: TreeEntry[];
   generatedHistory: unknown;
   rulesContent: string;
   onChangeTab: (tab: "info" | "historial" | "reglas") => void;
   onClose: () => void;
   onUpdateRules: (markdown: string) => Promise<void>;
+  onRefreshInfo: () => Promise<void>;
+  onUploadContextFile: () => Promise<void>;
+  onDeleteContextFile: (path: string) => Promise<void>;
 }
 
 interface FileEntry {
@@ -131,15 +136,28 @@ export default function SidePanel({
   open,
   tab,
   area,
+  projectId,
   treeEntries,
   generatedHistory,
   rulesContent,
   onChangeTab,
   onClose,
   onUpdateRules,
+  onRefreshInfo,
+  onUploadContextFile,
+  onDeleteContextFile,
 }: SidePanelProps) {
   const [filter, setFilter] = useState<FilterKey>("recent");
   const [rules, setRules] = useState<Rule[]>([]);
+
+  const files: FileEntry[] = treeEntries
+    .filter((e) => e.type === "file")
+    .map((e) => ({
+      name: e.name,
+      meta: fileTypeFromTreeEntry(e.type).toUpperCase(),
+      type: fileTypeFromName(e.name),
+      path: e.path,
+    }));
 
   useEffect(() => {
     setRules(parseRulesMarkdown(rulesContent));
@@ -157,20 +175,47 @@ export default function SidePanel({
     return () => document.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
-  const toggleRule = (idx: number) => {
-    setRules((prev) =>
-      prev.map((r, i) => (i === idx ? { ...r, enabled: !r.enabled } : r))
-    );
+  const toggleRule = async (idx: number) => {
+    const nextRules = rules.map((r, i) => (i === idx ? { ...r, enabled: !r.enabled } : r));
+    setRules(nextRules);
+    await onUpdateRules(rulesToMarkdown(nextRules));
   };
 
-  const files: FileEntry[] = treeEntries
-    .filter((e) => e.type === "file")
-    .map((e) => ({
-      name: e.name,
-      meta: fileTypeFromTreeEntry(e.type).toUpperCase(),
-      type: fileTypeFromName(e.name),
-      path: e.path,
-    }));
+  const handleAddRule = async () => {
+    const name = window.prompt("Nombre de la regla");
+    if (!name?.trim()) return;
+    const desc = window.prompt("Descripcion corta", "") ?? "";
+    const nextRules = [
+      ...rules,
+      { name: name.trim(), desc: desc.trim(), tags: ["manual"], enabled: true },
+    ];
+    setRules(nextRules);
+    await onUpdateRules(rulesToMarkdown(nextRules));
+  };
+
+  const handleDownloadContext = useCallback(async () => {
+    if (!projectId || files.length === 0) return;
+    const first = files[0];
+    if (!first.path) return;
+    try {
+      const blob = await downloadFile(projectId, first.path);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = first.name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Context download failed:", err);
+    }
+  }, [projectId, files]);
+
+  const handleDeleteContext = useCallback(async () => {
+    const first = files[0];
+    if (!first?.path) return;
+    await onDeleteContextFile(first.path);
+    await onRefreshInfo();
+  }, [files, onDeleteContextFile, onRefreshInfo]);
 
   const historyGroups: HistoryGroup[] = Array.isArray(generatedHistory)
     ? (generatedHistory as HistoryGroup[])
@@ -298,13 +343,13 @@ export default function SidePanel({
                 activa.
               </p>
               <div className="sp-card-actions">
-                <button className="sp-act" data-tone="primary">
+                <button className="sp-act" data-tone="primary" onClick={() => void onUploadContextFile()}>
                   {ADD_SVG} Agregar
                 </button>
-                <button className="sp-act">
+                <button className="sp-act" onClick={handleDownloadContext} disabled={files.length === 0}>
                   {DOWNLOAD_SVG} Descargar
                 </button>
-                <button className="sp-act" data-tone="danger">
+                <button className="sp-act" data-tone="danger" onClick={handleDeleteContext} disabled={files.length === 0}>
                   {DELETE_SVG} Eliminar
                 </button>
               </div>
@@ -326,6 +371,11 @@ export default function SidePanel({
                       className="fr-menu"
                       data-tip="Más"
                       aria-label="Más"
+                      onClick={async () => {
+                        if (!f.path) return;
+                        await onDeleteContextFile(f.path);
+                        await onRefreshInfo();
+                      }}
                     >
                       {ICON_MENU}
                     </button>
@@ -431,13 +481,15 @@ export default function SidePanel({
                     <button
                       className="rr-toggle"
                       aria-label="Activar regla"
-                      onClick={() => toggleRule(i)}
+                      onClick={() => {
+                        void toggleRule(i);
+                      }}
                     />
                   </div>
                 ))
               )}
 
-              <button className="rule-add">
+              <button className="rule-add" onClick={() => void handleAddRule()}>
                 {ADD_SVG} Agregar regla
               </button>
             </div>
@@ -446,34 +498,4 @@ export default function SidePanel({
       </aside>
     </>
   );
-}
-
-function parseRulesMarkdown(markdown: string): Rule[] {
-  if (!markdown) return [];
-  const lines = markdown.split("\n");
-  const rules: Rule[] = [];
-  let current: Rule | null = null;
-
-  for (const line of lines) {
-    const heading = line.match(/^###\s+(.+)/);
-    const listDesc = line.match(/^-\s+(.+)/);
-    const tagLine = line.match(/^`([^`]+)`$/);
-
-    if (heading) {
-      if (current) rules.push(current);
-      current = {
-        name: heading[1].trim(),
-        desc: "",
-        tags: [],
-        enabled: true,
-      };
-    } else if (current && listDesc) {
-      current.desc = listDesc[1].trim();
-    } else if (current && tagLine) {
-      current.tags.push(tagLine[1].trim());
-    }
-  }
-
-  if (current) rules.push(current);
-  return rules;
 }
