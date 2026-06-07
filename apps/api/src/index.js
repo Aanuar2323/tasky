@@ -1,14 +1,15 @@
 /**
- * index.js — Servidor API principal de la aplicación Task
+ * index.js — Servidor API principal de la aplicación Tasky
  *
  * Este es el punto de entrada del backend. Define todas las rutas
- * REST que consume el frontend (React/Vite). Usa Express.js con
+ * REST que consume el frontend (Next.js + React). Usa Express.js con
  * CORS habilitado y validación de esquemas con Zod.
  *
  * Arquitectura general:
- *   - Almacenamiento: archivos en disco (storage/) vía storage.js
- *   - IA: NVIDIA NIM API vía nvidia.js
- *   - Persistencia del chat: archivos .jsonl (una línea por mensaje)
+ * - Almacenamiento: archivos en disco (storage/) vía storage.js
+ * - IA: OpenRouter API (OpenAI-compatible) vía llm-client.js
+ * - Persistencia del chat: archivos .jsonl por área y chat
+ * - Reglas por área: ai/layer2/areas/{areaId}/rules.md
  *
  * Prefijo de rutas: /api/projects/:id/...
  * Puerto por defecto: 8787
@@ -37,7 +38,7 @@ import {
   safeJoin,
 } from './storage.js';
 
-import { nvidiaChat } from './nvidia.js';
+import { nvidiaChat, getAvailableProviders, setProvider } from './llm-client.js';
 
 import { generateFile, readFileStructure, editFile, detectFileType } from './generators/index.js';
 
@@ -145,18 +146,45 @@ async function ensureRoot() {
  * @returns {{cleanText: string, meta: Object|null}} Texto limpio y metadato parseado
  */
 function parseMetaFromAssistant(text) {
+  const safeText = typeof text === 'string' ? text : '';
   const marker = 'TASK_APP_META:';
-  const idx = text.lastIndexOf(marker);
-  if (idx === -1) return { cleanText: text, meta: null };
+  const idx = safeText.lastIndexOf(marker);
+  if (idx === -1) return { cleanText: safeText, meta: null };
 
-  const metaStr = text.slice(idx + marker.length).trim();
-  const cleanText = text.slice(0, idx).trim();
+  const metaStr = safeText.slice(idx + marker.length).trim();
+  const cleanText = safeText.slice(0, idx).trim();
 
   try {
     const meta = JSON.parse(metaStr);
     return { cleanText, meta };
   } catch {
-    return { cleanText: text, meta: null };
+    return { cleanText: safeText, meta: null };
+  }
+}
+
+/**
+ * Parsea la respuesta estructurada del LLM (JSON schema strict).
+ * El LLM ahora responde con un JSON que tiene {content, meta, fileGenerated?}
+ * en vez de "markdown + TASK_APP_META: {...}".
+ *
+ * @param {string} raw — texto crudo de la respuesta del LLM
+ * @returns {{content: string, meta: object|null, fileGenerated: object|null, parseError: string|null}}
+ */
+function parseStructuredResponse(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { content: '', meta: null, fileGenerated: null, parseError: 'empty_response' };
+  }
+  try {
+    const obj = JSON.parse(raw);
+    return {
+      content: typeof obj.content === 'string' ? obj.content : '',
+      meta: obj.meta && typeof obj.meta === 'object' ? obj.meta : null,
+      fileGenerated: obj.fileGenerated && typeof obj.fileGenerated === 'object' ? obj.fileGenerated : null,
+      parseError: null,
+    };
+  } catch {
+    const { cleanText, meta } = parseMetaFromAssistant(raw);
+    return { content: cleanText, meta, fileGenerated: null, parseError: 'legacy_fallback' };
   }
 }
 
@@ -232,6 +260,30 @@ function pickRelevantFiles(prompt, files, max = 3) {
  */
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
+// ── Proveedor de IA ─────────────────────────────────────────
+
+/**
+ * GET /api/provider
+ * Obtiene los proveedores de IA disponibles y sus modelos.
+ * Retorna: { providers: Record<string, { label: string, model: string }> }
+ */
+app.get('/api/provider', (_req, res) => {
+  res.json({ providers: getAvailableProviders() });
+});
+
+/**
+ * POST /api/provider
+ * Cambia el proveedor de IA activo.
+ * Body: { provider: 'openrouter' | 'nvidia' }
+ * Retorna: { ok: true }
+ */
+app.post('/api/provider', (req, res) => {
+  const schema = z.object({ provider: z.enum(['openrouter', 'nvidia']) });
+  const body = schema.parse(req.body ?? {});
+  setProvider(body.provider);
+  res.json({ ok: true });
+});
+
 // ── Proyectos ──────────────────────────────────────────────
 
 /**
@@ -276,10 +328,14 @@ app.post('/api/projects', async (req, res) => {
  */
 app.get('/api/projects/:id/tree', async (req, res) => {
   const projectId = req.params.id;
+  const areaId = String(req.query.areaId ?? '');
   const relPath = String(req.query.path ?? '');
   const root = projectRoot({ userId: USER_ID, projectId });
   await ensureProjectScaffold(root);
-  const entries = await listDir(root, relPath);
+  const dir = areaId
+    ? (relPath ? `ai/layer2/areas/${areaId}/${relPath}` : `ai/layer2/areas/${areaId}`)
+    : (relPath || '');
+  const entries = await listDir(root, dir);
   res.json({ entries });
 });
 
@@ -626,25 +682,30 @@ app.get('/api/projects/:id/generated-history', async (req, res) => {
  */
 app.get('/api/projects/:id/rules', async (req, res) => {
   const projectId = req.params.id;
+  const areaId = String(req.query.areaId ?? '');
   const root = projectRoot({ userId: USER_ID, projectId });
   await ensureProjectScaffold(root);
-  const content = await readTextFile(root, 'rules.md');
+  const relPath = areaId ? `ai/layer2/areas/${areaId}/rules.md` : 'rules.md';
+  const content = await readOptional(root, relPath);
   res.json({ content });
 });
 
 /**
  * PUT /api/projects/:id/rules
- * Actualiza las reglas del proyecto.
- * Body: { markdown: string } — Contenido markdown de las reglas
+ * Actualiza las reglas del proyecto o de un área específica.
+ * Body: { markdown: string, areaId?: string }
+ *   - Con areaId: guarda en ai/layer2/areas/{areaId}/rules.md
+ *   - Sin areaId: guarda en rules.md (global)
  * Retorna: { ok: true }
  */
 app.put('/api/projects/:id/rules', async (req, res) => {
   const projectId = req.params.id;
-  const schema = z.object({ markdown: z.string() });
+  const schema = z.object({ markdown: z.string(), areaId: z.string().optional() });
   const body = schema.parse(req.body ?? {});
   const root = projectRoot({ userId: USER_ID, projectId });
   await ensureProjectScaffold(root);
-  await writeTextFile(root, 'rules.md', body.markdown);
+  const relPath = body.areaId ? `ai/layer2/areas/${body.areaId}/rules.md` : 'rules.md';
+  await writeTextFile(root, relPath, body.markdown);
   res.json({ ok: true });
 });
 
@@ -794,7 +855,7 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
   await ensureProjectScaffold(root);
 
   // Leer las reglas del proyecto para incluirlas en el prompt del sistema
-  const rules = await readTextFile(root, 'rules.md');
+  const rules = await readOptional(root, `ai/layer2/areas/${areaId}/rules.md`);
   const activeTask = body.activeTaskPath;
   const areaId = body.areaId;
   const chatId = body.chatId;
@@ -846,48 +907,61 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
         ? `USER ATTACHMENTS (${attachmentBlocks.length} file(s) — analyze them as requested):\n${attachmentBlocks.join('\n')}\n\n`
         : '') +
       `LAYER 3 (QA/testing):\n${layer3}\n\n` +
-      `Return normal markdown for the user.\n` +
-      `At the end of your message, append EXACTLY ONE line in this format:\n` +
-      `TASK_APP_META: {"complete":true|false, "taskPath":string|null, "summary":string}\n` +
-      `Only set complete=true if you believe the user's request is fully solved and ready to be moved to history.\n` +
-      `IMPORTANT: A task moves to history only when the user clicks the Completado button in the UI.\n\n` +
-      `FILE GENERATION CAPABILITY:\n` +
-      `When the user asks you to create or edit a file (Excel/Word/PowerPoint/Image), you MUST:\n` +
-      `1. Respond with a clear explanation of what you will generate\n` +
-      `2. Append a TASK_APP_META line with fileGenerated field:\n` +
-      `TASK_APP_META: {"complete":false,"taskPath":null,"summary":"...","fileGenerated":{"type":"xlsx|docx|pptx|png","data":{...},"filename":"suggested-name"}}\n\n` +
-      `For edits, include editPath and editChanges instead of data:\n` +
-      `TASK_APP_META: {"complete":false,"taskPath":null,"summary":"...","fileGenerated":{"type":"xlsx","editPath":"files/generated/abc.xlsx","editChanges":{...},"filename":"edited-name"}}\n\n` +
-      `XLSX data: {sheets:[{name:string,columns:[{header:string,key:string,width?:number}],rows:[{key:value}],styles?:{headerBold:boolean,headerBgColor:string,headerFontColor:string}}]}\n\n` +
-      `DOCX data: {title?:string,sections:[{type:"heading"|"paragraph"|"bullet"|"table"|"image",text?:string,level?:1|2|3,bold?:boolean,italic?:boolean,fontSize?:number,alignment?:"left"|"center"|"right"|"justify",rows?:string[][],imagePath?:string,imageWidth?:number,imageHeight?:number}]}\n\n` +
-      `PPTX data: {title?:string,slides:[{type:"title"|"content"|"bullets"|"table"|"image",title?:string,subtitle?:string,body?:string,bullets?:string[],rows?:string[][],imagePath?:string,notes?:string}]}\n\n` +
-      `PNG chart: {type:"chart",chartType:"bar"|"line"|"pie"|"doughnut",title:string,labels:string[],datasets:[{label:string,data:number[],color?:string}],width?:number,height?:number}\n` +
-      `PNG table: {type:"table",title?:string,headers:string[],rows:string[][],width?:number,height?:number}\n` +
-      `PNG text: {type:"text",title:string,subtitle?:string,body:string,width?:number,height?:number}\n` +
-      `PNG diagram: {type:"diagram",title?:string,nodes:[{id:string,label:string,x:number,y:number}],edges:[{from:string,to:string,label?:string}],width?:number,height?:number}\n` +
-      `PNG edit changes: {resize?:{width,height},crop?:{x,y,width,height},rotate?:number,addText?:[{text,x,y,fontSize,color}],brightness?:number,contrast?:number,grayscale?:boolean,blur?:number,sharpen?:boolean,watermark?:{text,fontSize,color,opacity}}\n\n` +
+      `You must respond with a JSON object that matches this exact schema:\n` +
+      `{\n` +
+      `  "content": "<markdown visible for the user, never empty>",\n` +
+      `  "meta": { "complete": <bool>, "taskPath": <string|null>, "summary": "<short summary>" },\n` +
+      `  "fileGenerated": <optional, only when user asks to create/edit a file>\n` +
+      `}\n\n` +
+      `Rules:\n` +
+      `- "content" is REQUIRED and must never be empty. Put the user-facing markdown here.\n` +
+      `- "meta.complete" should be true only if the user's request is fully solved.\n` +
+      `- "meta.taskPath" should be the active task path if you are marking it complete, else null.\n` +
+      `- "meta.summary" is a one-line summary of your response.\n` +
+      `- "fileGenerated" is OPTIONAL. Include it only when the user asks to create or edit a file (Excel/Word/PowerPoint/Image). Same structure as before.\n\n` +
+      `FILE GENERATION (only when user requests a file):\n` +
+      `For XLSX: { "type":"xlsx", "data": { "sheets":[{"name":string,"columns":[{"header":string,"key":string,"width"?:number}],"rows":[{"key":value}],"styles"?:{"headerBold":bool,"headerBgColor":string,"headerFontColor":string}}] }, "filename": "..." }\n` +
+      `For DOCX: { "type":"docx", "data": { "title"?:string,"sections":[{"type":"heading|paragraph|bullet|table|image","text"?:string,"level"?:1|2|3,"bold"?:bool,"italic"?:bool,"fontSize"?:number,"alignment"?:string,"rows"?:string[][],"imagePath"?:string,"imageWidth"?:number,"imageHeight"?:number}] }, "filename": "..." }\n` +
+      `For PPTX: { "type":"pptx", "data": { "title"?:string,"slides":[{"type":"title|content|bullets|table|image","title"?:string,"subtitle"?:string,"body"?:string,"bullets"?:string[],"rows"?:string[][],"imagePath"?:string,"notes"?:string}] }, "filename": "..." }\n` +
+      `For PNG chart: { "type":"png", "data": { "type":"chart","chartType":"bar|line|pie|doughnut","title":string,"labels":string[],"datasets":[{"label":string,"data":number[],"color"?:string}],"width"?:number,"height"?:number }, "filename": "..." }\n` +
+      `For PNG table: { "type":"png", "data": { "type":"table","title"?:string,"headers":string[],"rows":string[][],"width"?:number,"height"?:number }, "filename": "..." }\n` +
+      `For PNG text: { "type":"png", "data": { "type":"text","title":string,"subtitle"?:string,"body":string,"width"?:number,"height"?:number }, "filename": "..." }\n` +
+      `For PNG diagram: { "type":"png", "data": { "type":"diagram","title":string,"nodes":[{"id":string,"label":string,"x":number,"y":number}],"edges":[{"from":string,"to":string,"label"?:string}],"width"?:number,"height"?:number }, "filename": "..." }\n` +
+      `For edits, include "editPath" and "editChanges" instead of "data".\n\n` +
       `IMPORTANT LIMITS FOR FILE GENERATION:\n` +
-      `- NEVER generate massive datasets. If the user asks for large datasets (e.g., 'all people you can', 'large sample'), generate ONLY a mock schema with 3 to 5 rows of sample data. Warn the user that LLMs cannot generate large datasets directly and they should run a script or supply data.\n` +
+      `- NEVER generate massive datasets. If the user asks for large datasets, generate ONLY 3 to 5 sample rows.\n` +
       `- Maximum 10 rows of data per sheet/table under any circumstance.\n` +
-      `- Keep the TASK_APP_META JSON as compact as possible: no extra whitespace, no comments, no line breaks inside the JSON.\n` +
-      `- Use descriptive filenames in Spanish when appropriate.\n` +
-      `- ALWAYS provide the complete data structure in the fileGenerated field.\n`,
+      `- Keep all JSON values compact: no extra whitespace, no comments, no line breaks inside values.\n` +
+      `- Use descriptive filenames in Spanish when appropriate.\n`,
   };
 
   // Llamar a la API de NVIDIA con el historial completo + prompt del sistema
   try {
-    const { content } = await nvidiaChat({ messages: [system, ...body.messages] });
+    const llmResult = await nvidiaChat({ messages: [system, ...body.messages] });
+    const rawContent = llmResult?.message?.content ?? '';
 
-    // Separar metadatos del texto visible
-    const { cleanText, meta } = parseMetaFromAssistant(content);
+    // Parsear respuesta estructurada (JSON schema strict)
+    const { content: cleanText, meta, fileGenerated, parseError } = parseStructuredResponse(rawContent);
+
+    if (parseError) {
+      console.warn(`[CHAT] parse_error=${parseError} raw_len=${rawContent.length} genId=${llmResult?.generationId}`);
+    }
+    if (!cleanText || !cleanText.trim()) {
+      console.warn(
+        `[CHAT] EMPTY_CONTENT model=${llmResult?.raw?.model} genId=${llmResult?.generationId} ` +
+        `comp=${llmResult?.usage?.completion_tokens} reasoning=${llmResult?.usage?.completion_tokens_details?.reasoning_tokens} ` +
+        `raw_len=${rawContent.length}`
+      );
+    }
+
     const messageId = nanoid(12);
     const ts = Date.now();
 
-    // Auto-generar archivo si la IA lo solicita
+    // Auto-generar archivo si la IA lo solicita (vía JSON schema fileGenerated)
     let generatedFile = null;
-    if (meta?.fileGenerated) {
+    if (fileGenerated) {
       try {
-        const fg = meta.fileGenerated;
+        const fg = fileGenerated;
         const outputDir = path.join(root, 'files', 'generated');
 
         let genResult;
@@ -934,7 +1008,33 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
     res.json({ id: messageId, content: cleanText, meta, file: generatedFile });
   } catch (chatErr) {
     console.error('Chat error:', chatErr);
-    res.status(502).json({ error: chatErr?.message ?? 'Error comunicándose con la IA' });
+
+    const kind = chatErr?.kind ?? 'unknown';
+    const retriable = chatErr?.retriable ?? false;
+    const retryAfter = chatErr?.retryAfter ?? null;
+    const provider = chatErr?.provider ?? null;
+    const generationId = chatErr?.generationId ?? null;
+    const status = chatErr?.status ?? null;
+
+    const httpStatus =
+      kind === 'unauthorized' ? 401 :
+      kind === 'payment_required' ? 402 :
+      kind === 'forbidden' ? 403 :
+      kind === 'rate_limited' ? 429 :
+      kind === 'payload_too_large' ? 413 :
+      kind === 'unavailable' || kind === 'bad_gateway' || kind === 'server_error' ? 503 :
+      kind === 'network' ? 504 :
+      502;
+
+    res.status(httpStatus).json({
+      error: chatErr?.message ?? 'Error comunicándose con la IA',
+      kind,
+      retriable,
+      retryAfter,
+      provider,
+      generationId,
+      upstreamStatus: status,
+    });
   }
 });
 

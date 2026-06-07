@@ -6,15 +6,16 @@
  * de un directorio raíz (storage/).
  *
  * Estructura por proyecto:
- *   <storageRoot>/users/<userId>/projects/<projectId>/
- *     info/          → Metadatos del proyecto (areas.json, name.txt)
- *     chat/          → Historial de conversaciones
- *       areas/       → Subcarpetas por área y por chat (archivos .jsonl)
- *     tasks/
- *       inbox/       → Tareas pendientes
- *       history/     → Tareas completadas (movidas desde inbox)
- *     files/         → Archivos adjuntos y outputs generados
- *     rules.md       → Reglas del proyecto en formato markdown
+ * <storageRoot>/users/<userId>/projects/<projectId>/
+ * info/ → Metadatos del proyecto (areas.json, name.txt)
+ * chat/areas/ → Historial de conversaciones por área y chat (archivos .jsonl)
+ * ai/layer2/areas/<areaId>/ → Contexto por área (summary.md, rules.md)
+ * history/areas/<areaId>/files/ → Archivos completados por área
+ * tasks/
+ *   inbox/ → Tareas pendientes
+ *   history/ → Tareas completadas (movidas desde inbox)
+ * files/ → Archivos adjuntos y outputs generados
+ * rules.md → Reglas globales del proyecto (fallback si no hay reglas por área)
  */
 
 import fs from 'node:fs/promises';
@@ -83,9 +84,12 @@ export function safeJoin(root, relPath = '') {
  * y archivos por defecto. Si algo ya existe, no lo sobreescribe.
  *
  * Crea:
- *  - Carpetas: info/, chat/areas/, tasks/inbox/, tasks/history/, files/
- *  - Archivo: rules.md (solo si no existe)
- *  - Archivo: info/areas.json (solo si no existe, con 3 áreas iniciales)
+ * - Carpetas: info/, chat/areas/, tasks/inbox/, tasks/history/, files/
+ * - Archivo: rules.md (global fallback, solo si no existe)
+ * - Archivo: info/areas.json (solo si no existe, con 3 áreas iniciales)
+ * - AI layers: ai/layer1/, ai/layer2/areas/<areaId>/, ai/layer3/
+ * - Por área: summary.md + rules.md (area-scoped)
+ * - Por área: history/areas/<areaId>/files/
  *
  * @param {string} root - Ruta raíz del proyecto
  */
@@ -192,7 +196,17 @@ export async function ensureProjectScaffold(root) {
         await fs.writeFile(
           areaSummaryPath,
           `# Capa 2 — Resumen del área (${area.name ?? area.id})\n\n` +
-            `Describe aquí el contexto del área, objetivos y notas clave.\n`,
+          `Describe aquí el contexto del área, objetivos y notas clave.\n`,
+          'utf8'
+        );
+      }
+      const areaRulesPath = path.join(areaDir, 'rules.md');
+      try {
+        await fs.access(areaRulesPath);
+      } catch {
+        await fs.writeFile(
+          areaRulesPath,
+          `# Reglas del área (${area.name ?? area.id})\n\nConfigura cómo responde la IA en esta área.\n`,
           'utf8'
         );
       }

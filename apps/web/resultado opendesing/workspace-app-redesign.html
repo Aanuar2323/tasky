@@ -1,0 +1,2119 @@
+
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>Open Design — Workspace app, redesign</title>
+<style>
+  :root {
+    --bg: #F7F7F5;
+    --surface: #FFFFFF;
+    --fg: #1A1A18;
+    --muted: #888780;
+    --subtle: #B5B3AD;
+    --border: rgba(26, 26, 24, 0.08);
+    --border-strong: rgba(26, 26, 24, 0.14);
+    --accent: #3D4AE7;
+    --accent-soft: rgba(61, 74, 231, 0.08);
+    --accent-edge: rgba(61, 74, 231, 0.22);
+    --hover: #F1EFE8;
+    --user-bubble: #F1EFE8;
+    --success: #0F6E56;
+    --shell: #1A1A18;
+    --canvas: #ECEAE3;
+    --danger: #B42318;
+    --danger-soft: rgba(180, 35, 24, 0.08);
+    --success-soft: rgba(15, 110, 86, 0.08);
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--canvas);
+    color: var(--fg);
+    font: 400 14px/1.5 var(--font);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "ss01", "cv11";
+  }
+
+  /* =================== PAGE SHELL =================== */
+  .page {
+    min-height: 100vh;
+    padding: 32px 40px 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .page-head {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+  .page-head .eyebrow {
+    font: 500 11px/1 var(--mono);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .page-head .title {
+    font: 500 18px/1.3 var(--font);
+    color: var(--fg);
+    letter-spacing: -0.01em;
+  }
+  .page-head .sub {
+    font: 400 13px/1.4 var(--font);
+    color: var(--muted);
+  }
+  .page-head .spacer { flex: 1; }
+  .page-head .meta {
+    font: 400 11px/1 var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--subtle);
+  }
+
+  /* =================== APP MOCKUP =================== */
+    .app-frame {
+      width: 1440px;
+      height: 900px;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: 40px 1fr;
+      grid-template-columns: auto 1fr;
+      grid-template-areas:
+        "topbar topbar"
+        "sidebar chat";
+    }
+  .app-frame[data-collapsed="true"] {
+    grid-template-columns: 48px 1fr;
+  }
+
+  /* =================== TOPBAR =================== */
+  .topbar {
+    grid-area: topbar;
+    height: 40px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 8px 0 6px;
+    gap: 2px;
+  }
+  .icon-btn {
+    width: 28px; height: 28px;
+    display: grid; place-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+    position: relative;
+    transition: background 140ms ease, color 140ms ease;
+  }
+  .icon-btn:hover { background: var(--hover); color: var(--fg); }
+  .icon-btn svg { width: 16px; height: 16px; stroke-width: 1.6; }
+  .icon-btn[data-active="true"] { color: var(--fg); background: var(--hover); }
+  .icon-btn[data-accent="true"] { color: var(--accent); }
+
+  /* Tooltip */
+  .icon-btn::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--shell);
+    color: #fff;
+    font: 500 11px/1 var(--font);
+    letter-spacing: 0.01em;
+    padding: 6px 8px;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease, transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+    transition-delay: 0ms;
+  }
+  .icon-btn:hover::after {
+    opacity: 1;
+    transform: translateX(-50%) translateY(2px);
+    transition-delay: 280ms;
+  }
+
+  .topbar .divider {
+    width: 1px;
+    height: 18px;
+    background: var(--border);
+    margin: 0 6px;
+  }
+
+  .ws-name {
+    font: 500 13px/1 var(--font);
+    letter-spacing: -0.01em;
+    color: var(--fg);
+    padding: 0 8px 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ws-name .ws-mark {
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    background: var(--fg);
+    display: grid; place-items: center;
+    color: var(--bg);
+    font: 600 9px/1 var(--font);
+  }
+
+  .project-tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 4px;
+  }
+  .ptab {
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 6px;
+    font: 400 12px/1 var(--font);
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 140ms, color 140ms;
+  }
+  .ptab:hover { background: var(--hover); color: var(--fg); }
+  .ptab[aria-selected="true"] {
+    background: var(--hover);
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .ptab .ptab-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--subtle);
+    flex-shrink: 0;
+  }
+  .ptab[aria-selected="true"] .ptab-dot { background: var(--success); }
+  .ptab-add {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    cursor: pointer;
+    display: grid; place-items: center;
+  }
+  .ptab-add:hover { background: var(--hover); color: var(--fg); }
+  .ptab-add svg { width: 14px; height: 14px; stroke-width: 1.8; }
+
+  .topbar .right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-right: 4px;
+  }
+
+  .user-avatar {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--fg);
+    color: var(--bg);
+    font: 500 11px/1 var(--font);
+    display: grid;
+    place-items: center;
+    margin-left: 6px;
+    cursor: pointer;
+    position: relative;
+  }
+  .user-avatar::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    background: var(--shell);
+    color: #fff;
+    font: 500 11px/1 var(--font);
+    padding: 6px 8px;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms, transform 160ms;
+    transition-delay: 0ms;
+  }
+  .user-avatar:hover::after { opacity: 1; transition-delay: 280ms; }
+
+  /* =================== SIDEBAR =================== */
+  .sidebar {
+    grid-area: sidebar;
+    width: 200px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: width 220ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .app-frame[data-collapsed="true"] .sidebar { width: 48px; }
+
+  .sb-head {
+    padding: 16px 14px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .sb-head .label {
+    font: 500 11px/1 var(--mono);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .sb-head .add-area {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    cursor: pointer;
+    display: grid; place-items: center;
+  }
+  .sb-head .add-area:hover { background: var(--hover); color: var(--fg); }
+  .sb-head .add-area svg { width: 14px; height: 14px; stroke-width: 1.8; }
+
+  .sb-sub {
+    padding: 0 14px 12px;
+    font: 400 11.5px/1.4 var(--font);
+    color: var(--subtle);
+    letter-spacing: 0;
+  }
+  .app-frame[data-collapsed="true"] .sb-sub,
+  .app-frame[data-collapsed="true"] .sb-head .label,
+  .app-frame[data-collapsed="true"] .sb-head .add-area span,
+  .app-frame[data-collapsed="true"] .area-name,
+  .app-frame[data-collapsed="true"] .area-actions,
+  .app-frame[data-collapsed="true"] .sb-foot .foot-text,
+  .app-frame[data-collapsed="true"] .sb-foot .foot-icon-label {
+    display: none;
+  }
+  .app-frame[data-collapsed="true"] .sb-head {
+    padding: 16px 0 10px;
+    justify-content: center;
+  }
+  .app-frame[data-collapsed="true"] .area-row {
+    padding: 0 !important;
+    margin: 0 8px 2px !important;
+    justify-content: center !important;
+    border-radius: 8px !important;
+  }
+  .app-frame[data-collapsed="true"] .area-mark {
+    margin: 0 !important;
+  }
+
+  .area-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 6px 12px;
+  }
+  .area-list::-webkit-scrollbar { width: 0; }
+
+  .area-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px 7px 12px;
+    margin: 0 2px 2px;
+    border-radius: 7px;
+    cursor: pointer;
+    color: var(--fg);
+    transition: background 140ms ease;
+  }
+  .area-row::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 6px; bottom: 6px;
+    width: 2px;
+    border-radius: 0 2px 2px 0;
+    background: transparent;
+    transition: background 140ms;
+  }
+  .area-row:hover { background: var(--hover); }
+  .area-row:hover .area-actions { opacity: 1; }
+  .area-row[aria-current="true"] {
+    background: var(--accent-soft);
+  }
+  .area-row[aria-current="true"]::before { background: var(--accent); }
+  .area-row[aria-current="true"] .area-name { color: var(--fg); font-weight: 500; }
+
+  .area-mark {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    background: var(--hover);
+    color: var(--muted);
+    display: grid; place-items: center;
+    font: 500 11px/1 var(--font);
+    flex-shrink: 0;
+  }
+  .area-row[aria-current="true"] .area-mark {
+    background: var(--accent);
+    color: #fff;
+  }
+  .area-mark svg { width: 12px; height: 12px; stroke-width: 1.8; }
+
+  .area-name {
+    flex: 1;
+    font: 400 13px/1.3 var(--font);
+    letter-spacing: -0.005em;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .area-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .area-actions .mini-btn {
+    width: 22px; height: 22px;
+    border-radius: 4px;
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    cursor: pointer;
+    display: grid; place-items: center;
+  }
+  .area-actions .mini-btn:hover { background: var(--surface); color: var(--fg); }
+  .area-actions .mini-btn svg { width: 12px; height: 12px; stroke-width: 1.8; }
+
+  /* Sidebar foot */
+  .sb-foot {
+    border-top: 1px solid var(--border);
+    padding: 10px 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+  }
+  .sb-foot .foot-icon {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    display: grid; place-items: center;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .sb-foot .foot-icon svg { width: 14px; height: 14px; stroke-width: 1.7; }
+  .sb-foot .foot-text {
+    font: 400 12px/1.3 var(--font);
+  }
+
+  /* =================== CHAT =================== */
+  .chat {
+    grid-area: chat;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    min-width: 0;
+    background: var(--bg);
+    position: relative;
+  }
+  .chat-head {
+    height: 40px;
+    padding: 0 18px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .chat-head .crumb {
+    font: 400 12px/1 var(--font);
+    color: var(--muted);
+  }
+  .chat-head .crumb .sep { color: var(--subtle); margin: 0 6px; }
+  .chat-head .crumb .here { color: var(--fg); font-weight: 500; }
+  .chat-head .crumb .live-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    background: var(--success);
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .chat-head .right-tools {
+    margin-left: auto;
+    display: flex;
+    gap: 2px;
+  }
+
+  .chat-scroll {
+    overflow-y: auto;
+    padding: 28px 20% 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .chat-scroll::-webkit-scrollbar { width: 8px; }
+  .chat-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+
+  .msg {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    max-width: 720px;
+  }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg .avatar {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: grid; place-items: center;
+    font: 500 10px/1 var(--font);
+    color: #fff;
+  }
+  .msg.user .avatar { background: var(--fg); }
+  .msg.ai .avatar { background: var(--accent); }
+  .msg .bubble {
+    padding: 9px 14px;
+    border-radius: 14px;
+    font: 400 13.5px/1.55 var(--font);
+    color: var(--fg);
+    letter-spacing: -0.005em;
+  }
+  .msg.user .bubble {
+    background: var(--user-bubble);
+    border-bottom-right-radius: 4px;
+  }
+  .msg.ai .bubble {
+    background: transparent;
+    padding: 0;
+  }
+  .msg .role {
+    font: 500 11px/1 var(--font);
+    color: var(--muted);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .msg .role .when { color: var(--subtle); font-weight: 400; }
+
+  .msg.ai .content p { margin: 0 0 10px; }
+  .msg.ai .content p:last-child { margin-bottom: 0; }
+  .msg.ai .content h4 {
+    font: 500 13px/1.3 var(--font);
+    color: var(--fg);
+    margin: 0 0 8px;
+    letter-spacing: -0.005em;
+  }
+  .msg.ai .content ol, .msg.ai .content ul {
+    margin: 0 0 10px 18px;
+    padding: 0;
+  }
+  .msg.ai .content li { margin-bottom: 4px; }
+  .msg.ai .content strong { font-weight: 500; }
+  .msg.ai .content em { font-style: italic; color: var(--muted); }
+
+  /* File pill — compact, integrated */
+  .file-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 6px 6px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    max-width: 360px;
+  }
+  .file-pill .fp-icon {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+  .file-pill .fp-icon svg { width: 12px; height: 12px; stroke-width: 1.8; }
+  .file-pill .fp-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .file-pill .fp-name {
+    font: 500 12.5px/1.2 var(--font);
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    letter-spacing: -0.005em;
+  }
+  .file-pill .fp-meta {
+    font: 400 10.5px/1 var(--font);
+    color: var(--muted);
+  }
+  .file-pill .fp-dl {
+    height: 26px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    border: 0;
+    font: 500 11.5px/1 var(--font);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .file-pill .fp-dl:hover { background: #2E3BD6; }
+  .file-pill .fp-dl svg { width: 11px; height: 11px; stroke-width: 2; }
+
+  /* Confirm strip */
+  .confirm {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px 8px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .confirm .q {
+    font: 400 12.5px/1.3 var(--font);
+    color: var(--muted);
+  }
+  .confirm .yes, .confirm .no {
+    height: 26px;
+    padding: 0 12px;
+    border-radius: 6px;
+    font: 500 12px/1 var(--font);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .confirm .yes {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .confirm .yes:hover { background: #2E3BD6; border-color: #2E3BD6; }
+  .confirm .no:hover { background: var(--hover); }
+
+  /* AI turn after file */
+  .msg.ai .content.short { max-width: 640px; }
+
+  /* Typing line for final AI turn (not animated, just static hint) */
+  .typing {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 0;
+    color: var(--subtle);
+  }
+  .typing .dot {
+    width: 4px; height: 4px; border-radius: 50%;
+    background: var(--subtle);
+  }
+
+  /* =================== COMPOSER =================== */
+  .composer {
+    padding: 12px 20% 18px;
+    background: var(--bg);
+  }
+  .composer .frame {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 6px 6px 6px 6px;
+    transition: border-color 140ms;
+  }
+  .composer .frame:focus-within {
+    border-color: var(--border-strong);
+  }
+  .composer .attach {
+    width: 32px; height: 32px;
+    border-radius: 10px;
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    cursor: pointer;
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+  .composer .attach:hover { background: var(--hover); color: var(--fg); }
+  .composer .attach svg { width: 16px; height: 16px; stroke-width: 1.7; }
+
+  .composer .field {
+    flex: 1;
+    border: 0;
+    background: transparent;
+    font: 400 13.5px/1.5 var(--font);
+    color: var(--fg);
+    padding: 8px 6px;
+    outline: none;
+    resize: none;
+    min-height: 32px;
+    max-height: 140px;
+    font-family: inherit;
+  }
+  .composer .field::placeholder { color: var(--subtle); }
+
+  .composer .send {
+    width: 32px; height: 32px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    border: 0;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    transition: background 140ms, transform 140ms;
+  }
+  .composer .send:hover { background: #2E3BD6; }
+  .composer .send:active { transform: scale(0.96); }
+  .composer .send svg { width: 14px; height: 14px; stroke-width: 2; }
+
+  .composer .meta {
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 4px;
+    font: 400 10.5px/1 var(--font);
+    color: var(--subtle);
+  }
+  .composer .meta .kbd {
+    font: 500 10px/1 var(--mono);
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 2px 5px;
+    border-radius: 4px;
+  }
+  .composer .meta .right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+
+  /* =================== SPEC STRIP =================== */
+  .spec-strip {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1.25fr;
+    gap: 16px;
+  }
+  .spec {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px 16px;
+  }
+  .spec .spec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .spec .spec-head .tag {
+    font: 500 10px/1 var(--mono);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .spec .spec-head .title {
+    font: 500 13px/1.2 var(--font);
+    color: var(--fg);
+    letter-spacing: -0.005em;
+  }
+  .spec .spec-head .size {
+    margin-left: auto;
+    font: 400 11px/1 var(--mono);
+    color: var(--muted);
+  }
+  .spec .spec-body {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+  }
+  .spec-thumb {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    overflow: hidden;
+    flex: 1;
+    aspect-ratio: 4/3;
+    display: grid;
+    grid-template-rows: 14px 1fr;
+  }
+  .spec-thumb .tt {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .spec-thumb .tb {
+    display: grid;
+    grid-template-columns: auto 1fr;
+  }
+  .spec-thumb .tb .sb {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+  }
+  .spec-thumb .tb .cn { background: var(--bg); position: relative; }
+
+  /* expanded thumb */
+  .spec-thumb.t-expanded .tb { grid-template-columns: 80px 1fr; }
+  .spec-thumb.t-expanded .tb .sb {
+    display: flex;
+    flex-direction: column;
+    padding: 6px 6px;
+    gap: 3px;
+  }
+  .spec-thumb.t-expanded .tb .sb .row {
+    height: 16px;
+    border-radius: 3px;
+    background: transparent;
+  }
+  .spec-thumb.t-expanded .tb .sb .row.active {
+    background: var(--accent-soft);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 3px 3px 0;
+  }
+
+  /* collapsed thumb */
+  .spec-thumb.t-collapsed .tb { grid-template-columns: 16px 1fr; }
+  .spec-thumb.t-collapsed .tb .sb {
+    display: flex;
+    flex-direction: column;
+    padding: 6px 3px;
+    gap: 3px;
+    align-items: center;
+  }
+  .spec-thumb.t-collapsed .tb .sb .row {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--hover);
+  }
+  .spec-thumb.t-collapsed .tb .sb .row.active {
+    background: var(--accent);
+  }
+
+  .spec-thumb .tb .cn::before {
+    content: "";
+    position: absolute;
+    top: 24px; left: 18px; right: 18px; bottom: 18px;
+    background:
+      linear-gradient(180deg, var(--user-bubble) 0 6px, transparent 6px),
+      linear-gradient(180deg, transparent 0 0);
+    background-size: 100% 18px;
+    background-position: 0 0, 0 24px;
+    background-repeat: no-repeat;
+    opacity: 0.6;
+  }
+
+  .spec .notes {
+    margin-top: 12px;
+    font: 400 12px/1.5 var(--font);
+    color: var(--muted);
+  }
+  .spec .notes b { color: var(--fg); font-weight: 500; }
+
+  /* =================== SIDE PANEL (Info / Historial / Reglas) =================== */
+  .sp-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(26, 26, 24, 0.05);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 220ms cubic-bezier(0.23, 1, 0.32, 1);
+    z-index: 40;
+  }
+  .chat[data-panel="open"] .sp-backdrop {
+    opacity: 1;
+  }
+  .side-panel {
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: 420px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 220ms cubic-bezier(0.23, 1, 0.32, 1);
+    z-index: 50;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.04);
+  }
+  .chat[data-panel="open"] .side-panel { transform: translateX(0); }
+
+  .sp-head {
+    padding: 14px 14px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .sp-title { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .sp-eyebrow {
+    font: 500 10px/1 var(--mono);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .sp-name {
+    font: 500 14px/1.3 var(--font);
+    color: var(--fg);
+    letter-spacing: -0.005em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-tabs {
+    display: flex;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    flex-shrink: 0;
+  }
+  .sp-tab {
+    flex: 1;
+    height: 38px;
+    border: 0;
+    background: transparent;
+    font: 400 12.5px/1 var(--font);
+    color: var(--muted);
+    cursor: pointer;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: color 140ms;
+  }
+  .sp-tab:hover { color: var(--fg); }
+  .sp-tab[aria-selected="true"] { color: var(--fg); font-weight: 500; }
+  .sp-tab[aria-selected="true"]::after {
+    content: "";
+    position: absolute;
+    bottom: -1px; left: 14px; right: 14px;
+    height: 1.5px;
+    background: var(--accent);
+    border-radius: 1px;
+  }
+  .sp-tab-count {
+    font: 500 10px/1 var(--mono);
+    color: var(--subtle);
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--hover);
+    letter-spacing: 0.04em;
+  }
+  .sp-tab[aria-selected="true"] .sp-tab-count {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .sp-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 16px 24px;
+  }
+  .sp-body::-webkit-scrollbar { width: 6px; }
+  .sp-body::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+  .sp-pane { display: none; }
+  .sp-pane[aria-current="true"] { display: block; }
+
+  .sp-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 14px 12px;
+    margin-bottom: 12px;
+  }
+  .sp-card:last-child { margin-bottom: 0; }
+  .sp-card-eyebrow {
+    font: 500 10px/1 var(--mono);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+
+  .kv-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 6px 0;
+    font: 400 12.5px/1.4 var(--font);
+    color: var(--fg);
+  }
+  .kv-row + .kv-row { border-top: 1px solid var(--border); }
+  .kv-row .k {
+    width: 70px;
+    flex-shrink: 0;
+    color: var(--muted);
+    font: 400 11.5px/1.4 var(--font);
+  }
+  .kv-row .v {
+    flex: 1;
+    letter-spacing: -0.005em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sp-card-foot {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font: 400 11.5px/1.5 var(--font);
+    color: var(--muted);
+  }
+
+  .sp-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0 12px;
+    flex-wrap: wrap;
+  }
+  .sp-act {
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    font: 500 11.5px/1 var(--font);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: background 140ms, color 140ms, border-color 140ms;
+  }
+  .sp-act:hover { background: var(--hover); }
+  .sp-act[data-tone="primary"] {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .sp-act[data-tone="primary"]:hover { background: #2E3BD6; border-color: #2E3BD6; }
+  .sp-act[data-tone="danger"] { color: var(--danger); }
+  .sp-act[data-tone="danger"]:hover { background: var(--danger-soft); }
+  .sp-act svg { width: 12px; height: 12px; stroke-width: 1.8; }
+
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    margin-bottom: 6px;
+    transition: border-color 140ms;
+  }
+  .file-row:last-child { margin-bottom: 0; }
+  .file-row:hover { border-color: var(--border-strong); }
+  .fr-icon {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+  .file-row[data-type="pdf"] .fr-icon { background: var(--danger-soft); color: var(--danger); }
+  .file-row[data-type="csv"] .fr-icon { background: var(--success-soft); color: var(--success); }
+  .file-row[data-type="md"]  .fr-icon { background: var(--hover); color: var(--muted); }
+  .fr-icon svg { width: 13px; height: 13px; stroke-width: 1.8; }
+  .fr-body { flex: 1; min-width: 0; }
+  .fr-name {
+    font: 500 12.5px/1.2 var(--font);
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    letter-spacing: -0.005em;
+  }
+  .fr-meta {
+    font: 400 11px/1 var(--font);
+    color: var(--muted);
+    margin-top: 1px;
+  }
+  .fr-menu {
+    width: 22px; height: 22px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    border-radius: 4px;
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+  .fr-menu:hover { background: var(--hover); color: var(--fg); }
+  .fr-menu svg { width: 12px; height: 12px; stroke-width: 1.8; }
+
+  .sp-empty {
+    text-align: center;
+    padding: 36px 16px;
+    color: var(--muted);
+    font: 400 12.5px/1.5 var(--font);
+  }
+  .sp-empty svg {
+    width: 26px; height: 26px;
+    stroke-width: 1.3;
+    margin: 0 auto 10px;
+    display: block;
+    color: var(--subtle);
+  }
+
+  .hist-filter {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 14px;
+    padding: 3px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: fit-content;
+  }
+  .hf-chip {
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 6px;
+    background: transparent;
+    border: 0;
+    font: 400 11.5px/1 var(--font);
+    color: var(--muted);
+    cursor: pointer;
+    transition: background 140ms, color 140ms;
+  }
+  .hf-chip:hover { color: var(--fg); }
+  .hf-chip[aria-selected="true"] {
+    background: var(--surface);
+    color: var(--fg);
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  .hist-group { margin-bottom: 16px; }
+  .hist-group:last-child { margin-bottom: 0; }
+  .hist-date {
+    font: 500 10px/1 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+    padding: 0 4px;
+  }
+  .hist-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 9px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: background 140ms, border-color 140ms;
+  }
+  .hist-item:hover { background: var(--hover); border-color: var(--border-strong); }
+  .hi-mark {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    background: var(--hover);
+    color: var(--muted);
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+  .hist-item .hi-mark svg { width: 12px; height: 12px; stroke-width: 1.8; }
+  .hi-body { flex: 1; min-width: 0; }
+  .hi-title {
+    font: 500 12.5px/1.3 var(--font);
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    letter-spacing: -0.005em;
+  }
+  .hi-meta {
+    font: 400 11px/1.3 var(--font);
+    color: var(--muted);
+    margin-top: 1px;
+  }
+  .hi-time {
+    font: 500 11px/1 var(--mono);
+    color: var(--subtle);
+    flex-shrink: 0;
+    letter-spacing: 0.04em;
+  }
+
+  .rule-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 11px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    margin-bottom: 8px;
+  }
+  .rule-row:last-of-type { margin-bottom: 0; }
+  .rr-body { flex: 1; min-width: 0; }
+  .rr-name {
+    font: 500 12.5px/1.3 var(--font);
+    color: var(--fg);
+    letter-spacing: -0.005em;
+  }
+  .rr-desc {
+    font: 400 11.5px/1.45 var(--font);
+    color: var(--muted);
+    margin-top: 3px;
+  }
+  .rr-tags {
+    display: flex;
+    gap: 4px;
+    margin-top: 7px;
+    flex-wrap: wrap;
+  }
+  .rr-tag {
+    font: 500 10px/1 var(--mono);
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 3px 6px;
+    border-radius: 4px;
+  }
+  .rr-toggle {
+    width: 28px; height: 16px;
+    background: var(--border-strong);
+    border-radius: 999px;
+    position: relative;
+    cursor: pointer;
+    border: 0;
+    flex-shrink: 0;
+    margin-top: 2px;
+    transition: background 140ms;
+    padding: 0;
+  }
+  .rr-toggle::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 140ms;
+  }
+  .rule-row[aria-enabled="true"] .rr-toggle { background: var(--accent); }
+  .rule-row[aria-enabled="true"] .rr-toggle::after { transform: translateX(12px); }
+
+  .rule-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 36px;
+    width: 100%;
+    background: transparent;
+    border: 1px dashed var(--border-strong);
+    border-radius: 8px;
+    color: var(--muted);
+    font: 500 12px/1 var(--font);
+    cursor: pointer;
+    margin-top: 10px;
+    transition: background 140ms, color 140ms, border-color 140ms;
+  }
+  .rule-add:hover { background: var(--bg); color: var(--fg); border-color: var(--muted); }
+  .rule-add svg { width: 12px; height: 12px; stroke-width: 2; }
+
+  /* =================== PANEL SPEC MINI =================== */
+  .panel-mini {
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    overflow: hidden;
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+  }
+  .pm-head {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .pm-head .pm-titles { flex: 1; min-width: 0; }
+  .pm-eyebrow {
+    font: 500 9px/1 var(--mono);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .pm-name {
+    font: 500 12px/1.3 var(--font);
+    color: var(--fg);
+    margin-top: 3px;
+    letter-spacing: -0.005em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pm-close {
+    width: 18px; height: 18px;
+    border-radius: 4px;
+    background: var(--hover);
+    color: var(--muted);
+    display: grid; place-items: center;
+    font: 500 12px/1 var(--font);
+    flex-shrink: 0;
+  }
+  .pm-tabs {
+    display: flex;
+    padding: 0 6px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .pm-tab {
+    flex: 1;
+    padding: 8px 4px;
+    font: 500 10.5px/1 var(--font);
+    color: var(--muted);
+    text-align: center;
+    position: relative;
+    white-space: nowrap;
+  }
+  .pm-tab.active { color: var(--fg); font-weight: 500; }
+  .pm-tab.active::after {
+    content: "";
+    position: absolute;
+    bottom: -1px; left: 8px; right: 8px;
+    height: 1.5px;
+    background: var(--accent);
+    border-radius: 1px;
+  }
+  .pm-body {
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg);
+  }
+  .pm-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 9px 10px 8px;
+  }
+  .pm-kv {
+    display: flex;
+    justify-content: space-between;
+    padding: 3px 0;
+    font: 400 10.5px/1.3 var(--font);
+    color: var(--muted);
+  }
+  .pm-kv + .pm-kv { border-top: 1px solid var(--border); padding-top: 5px; margin-top: 3px; }
+  .pm-kv span:last-child {
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .pm-file {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+  }
+  .pm-file-icon {
+    width: 18px; height: 18px;
+    border-radius: 4px;
+    background: var(--accent-soft);
+    flex-shrink: 0;
+  }
+  .pm-file-name {
+    font: 500 10.5px/1.2 var(--font);
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    letter-spacing: -0.005em;
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+
+    <!-- Page head -->
+    <div class="page-head">
+      <span class="eyebrow">Spec · Workspace app</span>
+      <span class="title">Open Design — rediseño de jerarquía visual</span>
+      <span class="sub">Mismas piezas reorganizadas: sidebar colapsable, topbar 40px, file-pill integrada, acento sutil.</span>
+      <span class="spacer"></span>
+      <span class="meta">1440 × 900 · Desktop only</span>
+    </div>
+
+    <!-- =================== APP MOCKUP =================== -->
+    <div class="app-frame" id="app" data-collapsed="false">
+
+      <!-- TOPBAR -->
+      <header class="topbar">
+        <button class="icon-btn" data-tip="Colapsar panel · 48px" id="collapseBtn" aria-label="Colapsar sidebar">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M2 4h7M2 8h12M2 12h9" stroke-linecap="round"/></svg>
+        </button>
+        <div class="divider"></div>
+        <div class="ws-name"><span class="ws-mark">O</span> Open Design</div>
+
+        <div class="project-tabs" role="tablist">
+          <button class="ptab" role="tab" aria-selected="false">
+            <span class="ptab-dot"></span> Proyecto x
+          </button>
+          <button class="ptab" role="tab" aria-selected="true">
+            <span class="ptab-dot"></span> inteligencia de negocios
+          </button>
+          <button class="ptab-add" data-tip="Nuevo proyecto" aria-label="Nuevo proyecto">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor"><path d="M7 2v10M2 7h10" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+
+        <div class="right">
+          <button class="icon-btn" data-tip="Historial">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1.5" stroke-linecap="round"/></svg>
+          </button>
+          <button class="icon-btn" data-tip="Reglas">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M3.5 2.5h6L13 6v7a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5z" stroke-linejoin="round"/><path d="M5 8h6M5 10.5h4" stroke-linecap="round"/></svg>
+          </button>
+          <button class="icon-btn" data-accent="true" data-tip="IA · Claude 4.5" aria-label="IA">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M8 1.5l1.6 3.3 3.6.5-2.6 2.5.6 3.6L8 9.7 4.8 11.4l.6-3.6L2.8 5.3l3.6-.5L8 1.5z" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="user-avatar" data-tip="María · @Empresa">M</div>
+        </div>
+      </header>
+
+      <!-- SIDEBAR -->
+      <aside class="sidebar">
+        <div class="sb-head">
+          <span class="label">Áreas</span>
+          <button class="add-area" data-tip="Nueva área" aria-label="Nueva área">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor"><path d="M7 2v10M2 7h10" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="sb-sub">Organiza chats y vistas por espacio.</div>
+
+        <div class="area-list">
+          <div class="area-row" data-name="General">
+            <div class="area-mark">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M2 6l4-4 4 4v5H2V6z" stroke-linejoin="round"/></svg>
+            </div>
+            <span class="area-name">General</span>
+            <div class="area-actions">
+              <button class="mini-btn" data-tip="Información" aria-label="Información"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="6" cy="6" r="4.5"/><path d="M6 5.2v3M6 3.7v.1" stroke-linecap="round"/></svg></button>
+              <button class="mini-btn" data-tip="Historial" aria-label="Historial"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="6" cy="6" r="4.5"/><path d="M6 3.5v2.7l1.6 1" stroke-linecap="round"/></svg></button>
+              <button class="mini-btn" data-tip="Reglas" aria-label="Reglas"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M3 2h4l2 2v6H3V2z" stroke-linejoin="round"/><path d="M4.5 6h3M4.5 7.5h2" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+
+          <div class="area-row" data-name="Marketing">
+            <div class="area-mark">M</div>
+            <span class="area-name">Marketing</span>
+            <div class="area-actions">
+              <button class="mini-btn" data-tip="Información"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="6" cy="6" r="4.5"/><path d="M6 5.2v3M6 3.7v.1" stroke-linecap="round"/></svg></button>
+              <button class="mini-btn" data-tip="Historial"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="6" cy="6" r="4.5"/><path d="M6 3.5v2.7l1.6 1" stroke-linecap="round"/></svg></button>
+              <button class="mini-btn" data-tip="Reglas"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M3 2h4l2 2v6H3V2z" stroke-linejoin="round"/><path d="M4.5 6h3M4.5 7.5h2" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+
+          <div class="area-row" aria-current="true" data-name="Inteligencia de negocios">
+            <div class="area-mark">i</div>
+            <span class="area-name">inteligencia de negocios</span>
+            <div class="area-actions">
+              <button class="mini-btn" data-tip="Información"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="6" cy="6" r="4.5"/><path d="M6 5.2v3M6 3.7v.1" stroke-linecap="round"/></svg></button>
+              <button class="mini-btn" data-tip="Historial"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="6" cy="6" r="4.5"/><path d="M6 3.5v2.7l1.6 1" stroke-linecap="round"/></svg></button>
+              <button class="mini-btn" data-tip="Reglas"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M3 2h4l2 2v6H3V2z" stroke-linejoin="round"/><path d="M4.5 6h3M4.5 7.5h2" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+
+          <div class="area-row" data-name="Producto">
+            <div class="area-mark">P</div>
+            <span class="area-name">Producto</span>
+            <div class="area-actions">
+              <button class="mini-btn" data-tip="Información"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="6" cy="6" r="4.5"/><path d="M6 5.2v3M6 3.7v.1" stroke-linecap="round"/></svg></button>
+              <button class="mini-btn" data-tip="Historial"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="6" cy="6" r="4.5"/><path d="M6 3.5v2.7l1.6 1" stroke-linecap="round"/></svg></button>
+              <button class="mini-btn" data-tip="Reglas"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M3 2h4l2 2v6H3V2z" stroke-linejoin="round"/><path d="M4.5 6h3M4.5 7.5h2" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sb-foot">
+          <span class="foot-icon">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor"><circle cx="7" cy="7" r="5.5"/><path d="M7 4.2v3M7 8.6v.1" stroke-linecap="round"/></svg>
+          </span>
+          <span class="foot-text">Atajos · ⌘K</span>
+        </div>
+      </aside>
+
+      <!-- CHAT -->
+      <main class="chat" data-panel="closed">
+
+        <div class="sp-backdrop" id="spBackdrop"></div>
+        <aside class="side-panel" id="sidePanel" aria-hidden="true" aria-label="Panel de área">
+          <div class="sp-head">
+            <div class="sp-title">
+              <span class="sp-eyebrow" id="spEyebrow">Panel · Info</span>
+              <span class="sp-name" id="spName">inteligencia de negocios</span>
+            </div>
+            <button class="icon-btn" data-tip="Cerrar" id="spClose" aria-label="Cerrar panel">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M4 4l8 8M12 4l-8 8" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+
+          <div class="sp-tabs" role="tablist">
+            <button class="sp-tab" role="tab" aria-selected="true" data-tab="info">Info</button>
+            <button class="sp-tab" role="tab" aria-selected="false" data-tab="historial">Historial <span class="sp-tab-count" id="spTabCountHistorial">0</span></button>
+            <button class="sp-tab" role="tab" aria-selected="false" data-tab="reglas">Reglas <span class="sp-tab-count" id="spTabCountReglas">0</span></button>
+          </div>
+
+          <div class="sp-body">
+
+            <!-- INFO -->
+            <div class="sp-pane" id="spPaneInfo" aria-current="true">
+              <div class="sp-card">
+                <div class="sp-card-eyebrow">Información</div>
+                <div class="kv-row"><span class="k">Proyecto</span><span class="v" id="spKvProject">Proyecto x</span></div>
+                <div class="kv-row"><span class="k">Área</span><span class="v" id="spKvArea">inteligencia de negocios</span></div>
+                <div class="kv-row"><span class="k">Archivos</span><span class="v" id="spKvFiles">3 visibles</span></div>
+                <div class="sp-card-foot">Archivos visibles solo de esta sección. No hay navegación entre carpetas.</div>
+              </div>
+              <div class="sp-card">
+                <div class="sp-card-eyebrow">Contexto del área</div>
+                <p style="font: 400 12px/1.5 var(--font); color: var(--muted); margin-bottom: 6px;">Agregar, descargar o eliminar archivos de contexto del área activa.</p>
+                <div class="sp-card-actions">
+                  <button class="sp-act" data-tone="primary">
+                    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M6 2v8M2 6h8" stroke-linecap="round"/></svg>
+                    Agregar
+                  </button>
+                  <button class="sp-act">
+                    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M6 1.5v6M3.5 5L6 7.5 8.5 5M2 10h8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Descargar
+                  </button>
+                  <button class="sp-act" data-tone="danger">
+                    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M3 3h6M4.5 3V2a.5.5 0 0 1 .5-.5h2A.5.5 0 0 1 7.5 2v1M5 5.5v3M7 5.5v3M3.5 3l.5 6.5h4l.5-6.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Eliminar
+                  </button>
+                </div>
+                <div id="spFileList"></div>
+              </div>
+            </div>
+
+            <!-- HISTORIAL -->
+            <div class="sp-pane" id="spPaneHistorial" aria-current="false">
+              <div class="hist-filter" role="tablist">
+                <button class="hf-chip" aria-selected="true" data-filter="recent">Recientes</button>
+                <button class="hf-chip" aria-selected="false" data-filter="week">Esta semana</button>
+                <button class="hf-chip" aria-selected="false" data-filter="month">Este mes</button>
+                <button class="hf-chip" aria-selected="false" data-filter="all">Todo</button>
+              </div>
+              <div id="spHistorialList"></div>
+            </div>
+
+            <!-- REGLAS -->
+            <div class="sp-pane" id="spPaneReglas" aria-current="false">
+              <div class="sp-card">
+                <div class="sp-card-eyebrow">Reglas del área</div>
+                <p style="font: 400 12px/1.5 var(--font); color: var(--muted); margin-bottom: 10px;">Configura cómo responde la IA cuando trabaja dentro de esta área. Las reglas se aplican solo a esta sección.</p>
+                <div id="spReglasList"></div>
+                <button class="rule-add">
+                  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M6 2v8M2 6h8" stroke-linecap="round"/></svg>
+                  Agregar regla
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </aside>
+
+        <div class="chat-head">
+          <div class="crumb">
+            <span class="live-dot"></span>
+            <span>inteligencia de negocios</span>
+            <span class="sep">/</span>
+            <span class="here">Análisis Q2 · nuevos usuarios</span>
+          </div>
+          <div class="right-tools">
+            <button class="icon-btn" data-tip="Compartir"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M8 2v8M5 5l3-3 3 3M3 9v4a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V9" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="icon-btn" data-tip="Más"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="3.5" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor"/></svg></button>
+          </div>
+        </div>
+
+        <div class="chat-scroll">
+
+          <!-- USER 1 -->
+          <div class="msg user">
+            <div class="avatar">M</div>
+            <div>
+              <div class="role" style="justify-content:flex-end">María <span class="when">· 09:42</span></div>
+              <div class="bubble">Necesito un análisis del comportamiento de nuevos usuarios en el último trimestre y un reporte con hallazgos para la reunión del viernes.</div>
+            </div>
+          </div>
+
+          <!-- AI 1 -->
+          <div class="msg ai">
+            <div class="avatar">C</div>
+            <div style="min-width:0">
+              <div class="role">Claude <span class="when">· 09:42</span></div>
+              <div class="bubble">
+                <div class="content">
+                  <h4>Resumen ejecutivo · Q2</h4>
+                  <p>El comportamiento de nuevos usuarios muestra tres patrones relevantes:</p>
+                  <ol>
+                    <li><strong>Activación acelerada</strong> — el 64% completa el onboarding en menos de 8 minutos (vs. 14 min en Q1).</li>
+                    <li><strong>Adopción desigual</strong> — la función <em>Proyectos</em> se usa 3.2× más que <em>Reportes</em> en las primeras dos semanas.</li>
+                    <li><strong>Punto de fricción</strong> — el 47% abandona en el paso 4 (<em>vincular fuente de datos</em>).</li>
+                  </ol>
+                  <p>El segmento <strong>mid-market</strong> (50–500 empleados) concentra el 71% de las cuentas activadas y el ticket promedio más alto. Generé el documento completo con tablas y segmentaciones:</p>
+                </div>
+
+                <div style="margin-top:10px">
+                  <div class="file-pill">
+                    <div class="fp-icon">
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M3 1.5h4l2 2v6.5a.5.5 0 0 1-.5.5h-5.5a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" stroke-linejoin="round"/><path d="M5 6h2M5 7.5h1.5" stroke-linecap="round"/></svg>
+                    </div>
+                    <div class="fp-text">
+                      <div class="fp-name">Actividad_2_Big_Data_Desarrollo.docx</div>
+                      <div class="fp-meta">DOCX · 412 KB</div>
+                    </div>
+                    <button class="fp-dl">
+                      <svg viewBox="0 0 11 11" fill="none" stroke="currentColor"><path d="M5.5 1.5v6M3 5l2.5 2.5L8 5M2 9.5h7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      Descargar
+                    </button>
+                  </div>
+                </div>
+
+                <div style="margin-top:10px">
+                  <div class="confirm">
+                    <span class="q">¿Agregar este análisis al historial del área?</span>
+                    <button class="yes">Confirmar</button>
+                    <button class="no">Denegar</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- USER 2 -->
+          <div class="msg user">
+            <div class="avatar">M</div>
+            <div>
+              <div class="role" style="justify-content:flex-end">María <span class="when">· 09:44</span></div>
+              <div class="bubble">Perfecto, guárdalo y agenda una revisión con el equipo de producto.</div>
+            </div>
+          </div>
+
+          <!-- AI 2 -->
+          <div class="msg ai">
+            <div class="avatar">C</div>
+            <div>
+              <div class="role">Claude <span class="when">· 09:44</span></div>
+              <div class="bubble">
+                <div class="content short">
+                  <p>Listo. Agregado al historial de <em>inteligencia de negocios</em> y agendé la revisión para el <strong>viernes 13 a las 10:00</strong> con:</p>
+                  <ul style="list-style:none;margin:0;padding:0">
+                    <li>· María — Producto</li>
+                    <li>· Carlos — Data</li>
+                    <li>· Andrea — Diseño</li>
+                  </ul>
+                  <p style="margin-top:8px">Te envío la invitación al calendario en los próximos minutos.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- COMPOSER -->
+        <div class="composer">
+          <div class="frame">
+            <button class="attach" data-tip="Adjuntar archivo" aria-label="Adjuntar">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"><path d="M11.5 6.5l-4.2 4.2a2 2 0 0 1-2.8-2.8l4.7-4.7a3 3 0 0 1 4.2 4.2l-5 5a4 4 0 0 1-5.6-5.6L7 2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <textarea class="field" rows="1" placeholder="Escribe un mensaje…"></textarea>
+            <button class="send" data-tip="Enviar (⌘↩)" aria-label="Enviar">
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor"><path d="M2 7l10-5-3.5 12L6 8.5 2 7z" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+          <div class="meta">
+            <span>Claude 4.5 · 32k contexto</span>
+            <span class="right">
+              <span>Adjuntar con <span class="kbd">⌘</span><span class="kbd">⇧</span><span class="kbd">A</span></span>
+              <span>Enviar con <span class="kbd">⌘</span><span class="kbd">↩</span></span>
+            </span>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- =================== SPEC STRIP =================== -->
+    <div class="spec-strip">
+
+      <div class="spec">
+        <div class="spec-head">
+          <span class="tag">01 · Default</span>
+          <span class="title">Sidebar expandido · 200 px</span>
+          <span class="size">14% ancho</span>
+        </div>
+        <div class="spec-body">
+          <div class="spec-thumb t-expanded">
+            <div class="tt"></div>
+            <div class="tb">
+              <div class="sb">
+                <div class="row"></div>
+                <div class="row"></div>
+                <div class="row active"></div>
+                <div class="row"></div>
+                <div class="row"></div>
+              </div>
+              <div class="cn"></div>
+            </div>
+          </div>
+          <div style="flex: 1.4; min-width: 0; display:flex; flex-direction:column; gap:6px;">
+            <p class="notes"><b>Área activa</b> destacada por fondo <span style="color:var(--accent)">indigo @ 8%</span> y barra izquierda de 2 px, sin teal sólido. Acciones <b>Info / Historial / Reglas</b> aparecen solo al <b>hover</b>, no en estado de reposo.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec">
+        <div class="spec-head">
+          <span class="tag">02 · Compacto</span>
+          <span class="title">Sidebar colapsado · 48 px</span>
+          <span class="size">3% ancho</span>
+        </div>
+        <div class="spec-body">
+          <div class="spec-thumb t-collapsed">
+            <div class="tt"></div>
+            <div class="tb">
+              <div class="sb">
+                <div class="row"></div>
+                <div class="row"></div>
+                <div class="row active"></div>
+                <div class="row"></div>
+                <div class="row"></div>
+              </div>
+              <div class="cn"></div>
+            </div>
+          </div>
+          <div style="flex: 1.4; min-width: 0; display:flex; flex-direction:column; gap:6px;">
+            <p class="notes">Cada área se reduce a su <b>inicial</b> en un cuadrado de 22 px. El área activa pasa a <b>indigo sólido</b> con texto blanco. Tooltip con el nombre completo al hover.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec">
+        <div class="spec-head">
+          <span class="tag">03 · File pill</span>
+          <span class="title">Adjunto integrado · bubble</span>
+          <span class="size">360 × 38</span>
+        </div>
+        <div class="spec-body" style="flex-direction:column; gap:10px">
+          <div class="file-pill" style="max-width:none">
+            <div class="fp-icon">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M3 1.5h4l2 2v6.5a.5.5 0 0 1-.5.5h-5.5a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" stroke-linejoin="round"/><path d="M5 6h2M5 7.5h1.5" stroke-linecap="round"/></svg>
+            </div>
+            <div class="fp-text">
+              <div class="fp-name">Actividad_2_Big_Data_Desarrollo.docx</div>
+              <div class="fp-meta">DOCX · 412 KB</div>
+            </div>
+            <button class="fp-dl">
+              <svg viewBox="0 0 11 11" fill="none" stroke="currentColor"><path d="M5.5 1.5v6M3 5l2.5 2.5L8 5M2 9.5h7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Descargar
+            </button>
+          </div>
+          <p class="notes">Pill horizontal de <b>38 px</b> de alto, sin sombra, integrada en el flujo del chat — no flota como bloque aislado. Borde de 1 px, radio completo.</p>
+        </div>
+      </div>
+
+      <div class="spec">
+        <div class="spec-head">
+          <span class="tag">04 · Panel</span>
+          <span class="title">Info / Historial / Reglas · 420 px</span>
+          <span class="size">por área</span>
+        </div>
+        <div class="spec-body" style="flex-direction:column; gap:10px">
+          <div class="panel-mini">
+            <div class="pm-head">
+              <div class="pm-titles">
+                <div class="pm-eyebrow">Panel · Info</div>
+                <div class="pm-name">inteligencia de negocios</div>
+              </div>
+              <div class="pm-close">×</div>
+            </div>
+            <div class="pm-tabs">
+              <div class="pm-tab active">Info</div>
+              <div class="pm-tab">Historial · 4</div>
+              <div class="pm-tab">Reglas · 4</div>
+            </div>
+            <div class="pm-body">
+              <div class="pm-card">
+                <div class="pm-eyebrow" style="margin-bottom:6px">Información</div>
+                <div class="pm-kv"><span>Proyecto</span><span>Proyecto x</span></div>
+                <div class="pm-kv"><span>Área</span><span>inteligencia…</span></div>
+                <div class="pm-kv"><span>Archivos</span><span>3 visibles</span></div>
+              </div>
+              <div class="pm-card">
+                <div class="pm-eyebrow" style="margin-bottom:6px">Contexto del área</div>
+                <div class="pm-file"><div class="pm-file-icon"></div><div class="pm-file-name">Actividad_2_Big_Data_…</div></div>
+                <div class="pm-file"><div class="pm-file-icon"></div><div class="pm-file-name">Q2_user_behavior_…</div></div>
+              </div>
+            </div>
+          </div>
+          <p class="notes">Side panel <b>420 px</b> anclado al chat, con tres pestañas <b>por área</b>: <b>Info</b> (proyecto + archivos de contexto), <b>Historial</b> (sesiones anteriores) y <b>Reglas</b> (configuración IA). Se abre desde los mini-btns del sidebar o los iconos del topbar.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+<script>
+  (function () {
+    var app = document.getElementById('app');
+    var btn = document.getElementById('collapseBtn');
+    var chat = document.querySelector('.chat');
+    var panel = document.getElementById('sidePanel');
+    var backdrop = document.getElementById('spBackdrop');
+    var spClose = document.getElementById('spClose');
+    var spName = document.getElementById('spName');
+    var spEyebrow = document.getElementById('spEyebrow');
+    var spKvProject = document.getElementById('spKvProject');
+    var spKvArea = document.getElementById('spKvArea');
+    var spKvFiles = document.getElementById('spKvFiles');
+    var spTabCountHistorial = document.getElementById('spTabCountHistorial');
+    var spTabCountReglas = document.getElementById('spTabCountReglas');
+    var spFileList = document.getElementById('spFileList');
+    var spHistorialList = document.getElementById('spHistorialList');
+    var spReglasList = document.getElementById('spReglasList');
+
+    // Per-area data — each section is scoped to the active area.
+    var AREA_DATA = {
+      'General': {
+        files: [],
+        history: [
+          { date: 'Hace 2 semanas', days: 12, items: [
+            { title: 'Onboarding inicial del workspace', time: '14:20', meta: '4 mensajes' }
+          ]}
+        ],
+        rules: [
+          { name: 'Tono profesional', desc: 'Mantén respuestas en español, con tono cordial y directo.', tags: ['idioma','tono'], enabled: true }
+        ]
+      },
+      'Marketing': {
+        files: [
+          { name: 'Q3_campaign_brief.docx', meta: 'DOCX · 184 KB', type: 'docx' },
+          { name: 'persona_research_v2.pdf', meta: 'PDF · 2.1 MB', type: 'pdf' }
+        ],
+        history: [
+          { date: 'Hoy', days: 0, items: [
+            { title: 'Lanzamiento Q3 — copia para landing', time: '11:08', meta: '12 mensajes' },
+            { title: 'Audiencia LinkedIn para campaña nuevos usuarios', time: '09:35', meta: '6 mensajes' }
+          ]},
+          { date: 'Esta semana', days: 4, items: [
+            { title: 'Brief creatividad campaña navidad', time: 'Lun', meta: '8 mensajes' }
+          ]}
+        ],
+        rules: [
+          { name: 'Voz de marca', desc: 'Evita jerga técnica. Habla como el equipo de marca, no como el de producto.', tags: ['tono','marca'], enabled: true },
+          { name: 'Estructura de copy', desc: 'Cada pieza debe incluir título, propuesta de valor y CTA.', tags: ['formato'], enabled: true },
+          { name: 'Idioma', desc: 'Responde siempre en español neutro.', tags: ['idioma'], enabled: false }
+        ]
+      },
+      'inteligencia de negocios': {
+        files: [
+          { name: 'Actividad_2_Big_Data_Desarrollo.docx', meta: 'DOCX · 412 KB', type: 'docx' },
+          { name: 'Q2_user_behavior_summary.md', meta: 'MD · 18 KB', type: 'md' },
+          { name: 'cohort_retention_jun.csv', meta: 'CSV · 84 KB', type: 'csv' }
+        ],
+        history: [
+          { date: 'Hoy', days: 0, items: [
+            { title: 'Análisis Q2 · nuevos usuarios', time: '09:44', meta: '4 mensajes' },
+            { title: 'Forecast ARR para julio', time: '08:12', meta: '9 mensajes' }
+          ]},
+          { date: 'Ayer', days: 1, items: [
+            { title: 'Cohorte retención semana 11', time: '16:30', meta: '6 mensajes' }
+          ]},
+          { date: 'Esta semana', days: 3, items: [
+            { title: 'Comparativa planes Pro vs Business', time: 'Mar', meta: '14 mensajes' },
+            { title: 'Punto de fricción en onboarding', time: 'Lun', meta: '11 mensajes' }
+          ]}
+        ],
+        rules: [
+          { name: 'Fuente única de verdad', desc: 'Solo usa métricas de la tabla `analytics.events` después de junio 2024.', tags: ['datos','fuente'], enabled: true },
+          { name: 'Formato tabular', desc: 'Cuando listes más de 3 métricas, usa tabla Markdown.', tags: ['formato'], enabled: true },
+          { name: 'No inventar números', desc: 'Si no hay datos, devuelve "—" en lugar de estimar.', tags: ['rigor'], enabled: true },
+          { name: 'Idioma', desc: 'Responde en español; términos técnicos en inglés entre paréntesis la primera vez.', tags: ['idioma'], enabled: true }
+        ]
+      },
+      'Producto': {
+        files: [
+          { name: 'roadmap_h2_2026.pdf', meta: 'PDF · 720 KB', type: 'pdf' }
+        ],
+        history: [
+          { date: 'Hace 2 días', days: 2, items: [
+            { title: 'PRD — módulo de reportes', time: 'Jue', meta: '7 mensajes' }
+          ]}
+        ],
+        rules: [
+          { name: 'Estructura PRD', desc: 'Problema, objetivos, fuera de alcance, métricas, dependencias.', tags: ['formato'], enabled: true },
+          { name: 'Lenguaje accesible', desc: 'Audiencia mixta (diseño, data, negocio). Evita jerga interna.', tags: ['tono'], enabled: false }
+        ]
+      }
+    };
+
+    var activeFilter = 'recent';
+
+    var FILE_ICON_DOC = '<svg viewBox="0 0 13 13" fill="none" stroke="currentColor"><path d="M3 1.5h4l2 2v7.5H3V1.5z" stroke-linejoin="round"/><path d="M5 6.5h3M5 8h2" stroke-linecap="round"/></svg>';
+    var FILE_ICON_PDF = '<svg viewBox="0 0 13 13" fill="none" stroke="currentColor"><path d="M3 1.5h4l2 2v7.5H3V1.5z" stroke-linejoin="round"/><path d="M7 3.5v-2l2 2h-2z" stroke-linejoin="round"/></svg>';
+    var FILE_ICON_TABLE = '<svg viewBox="0 0 13 13" fill="none" stroke="currentColor"><rect x="2.5" y="2.5" width="8" height="8" rx="1"/><path d="M2.5 5.5h8M2.5 8.5h8M5.5 2.5v8M8.5 2.5v8" stroke-linecap="round"/></svg>';
+    var FILE_ICON_MD = '<svg viewBox="0 0 13 13" fill="none" stroke="currentColor"><path d="M3 2.5h7v8H3v-8z" stroke-linejoin="round"/><path d="M5 5v3M5 5l1.5 1.5M6.5 6.5L8 5M8 5v3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    var ICON_MENU = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><circle cx="3" cy="6" r="1" fill="currentColor"/><circle cx="6" cy="6" r="1" fill="currentColor"/><circle cx="9" cy="6" r="1" fill="currentColor"/></svg>';
+    var ICON_CHAT = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M2 3.5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H5l-2 2v-2H3a1 1 0 0 1-1-1V3.5z" stroke-linejoin="round"/></svg>';
+    var ICON_EMPTY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 4h11l3 3v13H5V4z" stroke-linejoin="round"/><path d="M9 11h6M9 14h4" stroke-linecap="round"/></svg>';
+
+    function fileIcon(type) {
+      if (type === 'pdf') return FILE_ICON_PDF;
+      if (type === 'csv') return FILE_ICON_TABLE;
+      if (type === 'md')  return FILE_ICON_MD;
+      return FILE_ICON_DOC;
+    }
+
+    function getActiveAreaName() {
+      var row = document.querySelector('.area-row[aria-current="true"]');
+      return row ? row.getAttribute('data-name') : 'inteligencia de negocios';
+    }
+
+    function getActiveTab() {
+      var t = document.querySelector('.sp-tab[aria-selected="true"]');
+      return t ? t.getAttribute('data-tab') : 'info';
+    }
+
+    function setTab(tab) {
+      document.querySelectorAll('.sp-tab').forEach(function (b) {
+        b.setAttribute('aria-selected', b.getAttribute('data-tab') === tab ? 'true' : 'false');
+      });
+      ['info', 'historial', 'reglas'].forEach(function (k) {
+        var p = document.getElementById('spPane' + k.charAt(0).toUpperCase() + k.slice(1));
+        if (p) p.setAttribute('aria-current', k === tab ? 'true' : 'false');
+      });
+      spEyebrow.textContent = 'Panel · ' + (tab.charAt(0).toUpperCase() + tab.slice(1));
+    }
+
+    function openPanel(tab) {
+      if (tab) setTab(tab);
+      chat.setAttribute('data-panel', 'open');
+      panel.setAttribute('aria-hidden', 'false');
+      renderPanel();
+    }
+
+    function closePanel() {
+      chat.setAttribute('data-panel', 'closed');
+      panel.setAttribute('aria-hidden', 'true');
+    }
+
+    function totalHistoryCount(data) {
+      return data.history.reduce(function (n, g) { return n + g.items.length; }, 0);
+    }
+
+    function renderPanel() {
+      var name = getActiveAreaName();
+      var data = AREA_DATA[name] || { files: [], history: [], rules: [] };
+      var tab = getActiveTab();
+
+      spName.textContent = name;
+      spKvArea.textContent = name;
+      spKvProject.textContent = 'Proyecto x';
+      spKvFiles.textContent = data.files.length
+        ? (data.files.length + (data.files.length === 1 ? ' visible' : ' visibles'))
+        : 'sin archivos';
+      spTabCountHistorial.textContent = totalHistoryCount(data);
+      spTabCountReglas.textContent = data.rules.length;
+
+      // INFO pane — file list
+      if (data.files.length === 0) {
+        spFileList.innerHTML = '<div class="sp-empty">' + ICON_EMPTY + 'Esta área no tiene archivos de contexto todavía.</div>';
+      } else {
+        spFileList.innerHTML = data.files.map(function (f) {
+          return '<div class="file-row" data-type="' + (f.type || 'docx') + '">' +
+            '<div class="fr-icon">' + fileIcon(f.type) + '</div>' +
+            '<div class="fr-body">' +
+              '<div class="fr-name">' + f.name + '</div>' +
+              '<div class="fr-meta">' + f.meta + '</div>' +
+            '</div>' +
+            '<button class="fr-menu" data-tip="Más" aria-label="Más">' + ICON_MENU + '</button>' +
+          '</div>';
+        }).join('');
+      }
+
+      // HISTORIAL pane
+      var filteredHistory = data.history.filter(function (g) {
+        if (activeFilter === 'week') return g.days <= 7;
+        if (activeFilter === 'month') return g.days <= 30;
+        return true; // 'recent' and 'all' show everything
+      });
+      if (filteredHistory.length === 0) {
+        spHistorialList.innerHTML = '<div class="sp-empty">' + ICON_EMPTY + 'Sin sesiones en este rango.</div>';
+      } else {
+        spHistorialList.innerHTML = filteredHistory.map(function (g) {
+          var items = g.items.map(function (it) {
+            return '<div class="hist-item">' +
+              '<div class="hi-mark">' + ICON_CHAT + '</div>' +
+              '<div class="hi-body">' +
+                '<div class="hi-title">' + it.title + '</div>' +
+                '<div class="hi-meta">' + it.meta + '</div>' +
+              '</div>' +
+              '<div class="hi-time">' + it.time + '</div>' +
+            '</div>';
+          }).join('');
+          return '<div class="hist-group">' +
+            '<div class="hist-date">' + g.date + '</div>' +
+            items +
+          '</div>';
+        }).join('');
+      }
+
+      // REGLAS pane
+      if (data.rules.length === 0) {
+        spReglasList.innerHTML = '<div class="sp-empty">' + ICON_EMPTY + 'No hay reglas configuradas. Agrega una para guiar las respuestas de la IA en esta área.</div>';
+      } else {
+        spReglasList.innerHTML = data.rules.map(function (r, i) {
+          var tags = (r.tags || []).map(function (t) { return '<span class="rr-tag">' + t + '</span>'; }).join('');
+          return '<div class="rule-row" aria-enabled="' + (r.enabled ? 'true' : 'false') + '" data-rule-idx="' + i + '">' +
+            '<div class="rr-body">' +
+              '<div class="rr-name">' + r.name + '</div>' +
+              '<div class="rr-desc">' + r.desc + '</div>' +
+              '<div class="rr-tags">' + tags + '</div>' +
+            '</div>' +
+            '<button class="rr-toggle" aria-label="Activar regla"></button>' +
+          '</div>';
+        }).join('');
+
+        // Wire toggles
+        spReglasList.querySelectorAll('.rr-toggle').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var row = btn.closest('.rule-row');
+            var on = row.getAttribute('aria-enabled') === 'true';
+            row.setAttribute('aria-enabled', on ? 'false' : 'true');
+          });
+        });
+      }
+    }
+
+    // ---- Existing sidebar / topbar / composer behavior ----
+
+    try {
+      var saved = localStorage.getItem('od:sidebar-collapsed');
+      if (saved === 'true') app.setAttribute('data-collapsed', 'true');
+    } catch (_) {}
+
+    btn.addEventListener('click', function () {
+      var isCollapsed = app.getAttribute('data-collapsed') === 'true';
+      app.setAttribute('data-collapsed', isCollapsed ? 'false' : 'true');
+      btn.setAttribute('data-tip', isCollapsed ? 'Colapsar panel · 48px' : 'Expandir panel · 200 px');
+      try { localStorage.setItem('od:sidebar-collapsed', isCollapsed ? 'false' : 'true'); } catch (_) {}
+    });
+
+    document.querySelectorAll('.area-row').forEach(function (row) {
+      row.addEventListener('click', function (e) {
+        // If the click is on a mini-btn (Info/Historial/Rules), handle it specifically.
+        var mini = e.target.closest('.mini-btn');
+        if (mini) {
+          e.stopPropagation();
+          var tip = mini.getAttribute('data-tip') || '';
+          var tab = tip === 'Historial' ? 'historial' : tip === 'Reglas' ? 'reglas' : 'info';
+          // Make sure this area is current
+          document.querySelectorAll('.area-row').forEach(function (r) { r.removeAttribute('aria-current'); });
+          row.setAttribute('aria-current', 'true');
+          openPanel(tab);
+          return;
+        }
+        document.querySelectorAll('.area-row').forEach(function (r) { r.removeAttribute('aria-current'); });
+        row.setAttribute('aria-current', 'true');
+        // If the panel is open, re-render to show this area's data
+        if (chat.getAttribute('data-panel') === 'open') renderPanel();
+      });
+    });
+
+    document.querySelectorAll('.ptab').forEach(function (t) {
+      t.addEventListener('click', function () {
+        document.querySelectorAll('.ptab').forEach(function (p) { p.setAttribute('aria-selected', 'false'); });
+        t.setAttribute('aria-selected', 'true');
+      });
+    });
+
+    var field = document.querySelector('.composer .field');
+    field.addEventListener('input', function () {
+      field.style.height = 'auto';
+      field.style.height = Math.min(field.scrollHeight, 140) + 'px';
+    });
+
+    // ---- Side panel wiring ----
+
+    spClose.addEventListener('click', closePanel);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && chat.getAttribute('data-panel') === 'open') {
+        closePanel();
+        e.preventDefault();
+      }
+    });
+
+    document.querySelectorAll('.sp-tab').forEach(function (b) {
+      b.addEventListener('click', function () { setTab(b.getAttribute('data-tab')); });
+    });
+
+    // Historial filter chips
+    document.querySelectorAll('.hf-chip').forEach(function (c) {
+      c.addEventListener('click', function () {
+        document.querySelectorAll('.hf-chip').forEach(function (x) { x.setAttribute('aria-selected', 'false'); });
+        c.setAttribute('aria-selected', 'true');
+        activeFilter = c.getAttribute('data-filter') || 'recent';
+        if (chat.getAttribute('data-panel') === 'open') renderPanel();
+      });
+    });
+
+    // Topbar right-side buttons: Historial / Reglas / IA open the panel for the active area
+    var topbarRightBtns = document.querySelectorAll('.topbar .right .icon-btn');
+    topbarRightBtns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        var tip = b.getAttribute('data-tip') || '';
+        if (tip === 'Historial') openPanel('historial');
+        else if (tip === 'Reglas') openPanel('reglas');
+        else if (tip.indexOf('IA') === 0) openPanel('info');
+      });
+    });
+
+    // Initial render so the spec counts match the data
+    renderPanel();
+  })();
+</script>
+</body>
+</html>
