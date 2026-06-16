@@ -13,3 +13,6 @@ apps/web/dist/
 apps/api/dist/
 
 .DS_Store
+
+# internal dev context
+AGENTS.md

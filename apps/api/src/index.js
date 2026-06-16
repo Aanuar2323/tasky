@@ -39,7 +39,7 @@ import {
   safeJoin,
 } from './storage.js';
 
-import { nvidiaChat, llmChatStream, getAvailableProviders, setProvider } from './llm-client.js';
+import { nvidiaChat, getAvailableProviders, setProvider, getActiveConfig, updateApiConfig, isConfigured } from './llm-client.js';
 
 import { generateFile, readFileStructure, editFile, detectFileType } from './generators/index.js';
 
@@ -300,6 +300,75 @@ app.post('/api/provider', (req, res) => {
   const body = schema.parse(req.body ?? {});
   setProvider(body.provider);
   res.json({ ok: true });
+});
+
+// ── Modelos de OpenRouter ─────────────────────────────────
+
+/**
+ * GET /api/models?apiKey=<key>
+ * Obtiene todos los modelos disponibles desde OpenRouter.
+ * Ordena: gratis primero, luego alfabético.
+ */
+app.get('/api/models', async (req, res) => {
+  const apiKey = String(req.query.apiKey || '') || getActiveConfig().API_KEY;
+  if (!apiKey) {
+    return res.status(400).json({ error: 'API key requerida' });
+  }
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) {
+      return res.status(502).json({ error: 'Error al obtener modelos de OpenRouter' });
+    }
+    const data = await response.json();
+    const models = (data.data || []).map(m => ({
+      id: m.id,
+      name: m.name,
+      isFree: m.id.endsWith(':free') || (Number(m.pricing?.prompt) === 0 && Number(m.pricing?.completion) === 0),
+    }));
+    models.sort((a, b) => {
+      if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
+      return a.id.localeCompare(b.id);
+    });
+    res.json({ models });
+  } catch (e) {
+    res.status(502).json({ error: `Error al conectar con OpenRouter: ${e?.message || String(e)}` });
+  }
+});
+
+// ── Setup / Status ─────────────────────────────────────────
+
+/**
+ * GET /api/status
+ * Indica si el servidor está funcionando y si la IA está configurada.
+ */
+app.get('/api/status', (_req, res) => {
+  res.json({
+    ok: true,
+    configured: isConfigured(),
+    provider: getActiveConfig().LABEL,
+    model: getActiveConfig().MODEL,
+  });
+});
+
+/**
+ * POST /api/setup
+ * Guarda la API key de OpenRouter y el modelo desde el frontend.
+ * Body: { apiKey: string, model?: string }
+ */
+app.post('/api/setup', async (req, res) => {
+  const schema = z.object({
+    apiKey: z.string().min(10, 'API key demasiado corta'),
+    model: z.string().optional(),
+  });
+  const body = schema.parse(req.body ?? {});
+  try {
+    await updateApiConfig({ apiKey: body.apiKey, model: body.model });
+    res.json({ ok: true, configured: true });
+  } catch (e) {
+    res.status(500).json({ error: `Error guardando config: ${e?.message || String(e)}` });
+  }
 });
 
 // ── Proyectos ──────────────────────────────────────────────
@@ -1038,9 +1107,10 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
 
         const relPath = path.relative(root, genResult.filePath).split(path.sep).join(path.posix.sep);
         generatedFile = {
-          path: relPath,
-          filename: genResult.filename,
+          name: genResult.filename,
+          url: relPath,
           type: fg.type,
+          meta: fg.type.toUpperCase(),
         };
       } catch (genErr) {
         console.error('Auto-generation failed:', genErr);
@@ -1088,114 +1158,6 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
       generationId,
       upstreamStatus: status,
     });
-  }
-});
-
-// ── Chat Streaming ────────────────────────────────────────
-
-/**
- * POST /api/projects/:id/chat/stream
- * Streaming SSE version of /chat. Sends text deltas in real-time,
- * then a final "done" event with the structured response.
- */
-app.post('/api/projects/:id/chat/stream', aiLimiter, async (req, res) => {
-  const projectId = req.params.id;
-  const schema = z.object({
-    messages: z.array(
-      z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string() })
-    ),
-    areaId: z.string().min(1),
-    chatId: z.string().min(1),
-    activeTaskPath: z.string().optional(),
-  });
-  const body = schema.parse(req.body ?? {});
-
-  const root = projectRoot({ userId: USER_ID, projectId });
-  await ensureProjectScaffoldCached(root);
-
-  const { areas } = await loadAreasConfig(root);
-  if (!chatExists(areas, body.areaId, body.chatId)) {
-    return res.status(404).json({ error: 'areaId/chatId not found' });
-  }
-
-  const activeTask = body.activeTaskPath;
-  const areaId = body.areaId;
-  const chatId = body.chatId;
-  const chatLogRel = `chat/areas/${areaId}/${chatId}.jsonl`;
-
-  const lastUser = [...body.messages].reverse().find((m) => m.role === 'user');
-  if (lastUser) {
-    await appendJsonl(path.join(root, chatLogRel), {
-      id: nanoid(12),
-      ts: Date.now(),
-      role: 'user',
-      content: lastUser.content,
-    });
-  }
-
-  const layer1 = await readOptional(root, 'ai/layer1/00-role-and-flow.md');
-  const layer2Summary = await readOptional(root, 'ai/layer2/summary.md');
-  const areaSummary = await readOptional(root, `ai/layer2/areas/${areaId}/summary.md`);
-  const layer3 = await readOptional(root, 'ai/layer3/qa.md');
-  const rules = await readOptional(root, `ai/layer2/areas/${areaId}/rules.md`);
-
-  const system = {
-    role: 'system',
-    content:
-      `You are an assistant inside a file-based task app.\n\n` +
-      `LAYER 1 (role + execution order):\n${layer1}\n\n` +
-      `LAYER 2 (global summary):\n${layer2Summary}\n\n` +
-      `LAYER 2 (area summary - ${areaId}):\n${areaSummary}\n\n` +
-      `RULES (markdown):\n${rules}\n\n` +
-      (activeTask
-        ? `ACTIVE TASK: ${activeTask}\n\n`
-        : `ACTIVE TASK: none.\n\n`) +
-      `LAYER 3 (QA/testing):\n${layer3}\n\n` +
-      `Respond in markdown. Be direct and helpful.`,
-  };
-
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
-
-  const sendSSE = (data) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
-  try {
-    const { fullContent } = await llmChatStream({
-      messages: [system, ...body.messages],
-      temperature: 0.7,
-      onChunk: (delta) => {
-        sendSSE({ type: 'chunk', delta });
-      },
-    });
-
-    const { cleanText, meta } = parseMetaFromAssistant(fullContent);
-    const content = cleanText || fullContent;
-    const messageId = nanoid(12);
-    const ts = Date.now();
-
-    await appendJsonl(path.join(root, chatLogRel), {
-      id: messageId,
-      ts,
-      role: 'assistant',
-      content,
-      meta,
-    });
-
-    sendSSE({ type: 'done', id: messageId, content, meta, file: null });
-  } catch (chatErr) {
-    console.error('Stream error:', chatErr);
-    sendSSE({
-      type: 'error',
-      error: chatErr?.message ?? 'Error comunicándose con la IA',
-      kind: chatErr?.kind ?? 'unknown',
-    });
-  } finally {
-    res.end();
   }
 });
 

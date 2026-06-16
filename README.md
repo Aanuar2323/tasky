@@ -23,19 +23,22 @@
 El proyecto funciona como un **Monorepo** y está dividido en dos partes principales: el backend (`api`) y el frontend (`web`).
 
 ```text
-/home/anuar/Documentos/proyects/task/
+task/
 │
 ├── apps/
 │   ├── api/                          # Backend en Node.js + Express
 │   │   ├── src/
 │   │   │   ├── index.js              # Punto de entrada, rutas REST, seguridad
 │   │   │   ├── storage.js            # Lógica del File System local (safeJoin, scaffold)
-│   │   ├── llm-client.js             # Cliente unificado OpenRouter / NVIDIA
-│   │   └── generators/               # Scripts generadores de archivos binarios
+│   │   │   ├── llm-client.js         # Cliente unificado OpenRouter / NVIDIA
+│   │   │   ├── config.js             # Gestión de configuración del usuario (API key UI)
+│   │   │   └── generators/           # Scripts generadores de archivos binarios
+│   │   ├── .env.example              # Template de variables de entorno
+│   │   └── package.json
 │   └── web/                          # Frontend Next.js 16 + React 19 + TypeScript
 │       ├── app/
 │       │   ├── layout.tsx            # Root layout con CSS globals
-│       │   ├── page.tsx              # Página principal (estado global, handlers)
+│       │   ├── page.tsx              # Página principal + setup screen
 │       │   ├── globals.css           # Tailwind base
 │       │   ├── workspace.css         # Design system Tasky (CSS custom)
 │       │   ├── lib/
@@ -46,15 +49,13 @@ El proyecto funciona como un **Monorepo** y está dividido en dos partes princip
 │       │     ├── ChatPanel.tsx       # Panel de chat con mensajes IA (Tasky)
 │       │     ├── Composer.tsx        # Input de mensajes con attachments (Tasky)
 │       │     └── SidePanel.tsx       # Panel Info/Historial/Reglas (por área)
-│       ├── public/                   # Assets estáticos
+│       ├── .env.example              # Template de variables de entorno
 │       ├── next.config.ts
 │       ├── tsconfig.json
 │       └── package.json
 │
-├── storage/                          # Directorio (gitignored) donde se guardan los datos del usuario
-├── docs/
-│   ├── CONTEXT.md                    # Documentación de contexto y decisiones
-│   └── SUBAGENTS.md                  # Instrucciones compartidas para subagentes
+├── storage/                          # Directorio (gitignored) — datos del usuario
+├── docs/                             # Notas internas de desarrollo (gitignored)
 ├── security.md                       # Documentación oficial sobre ciberseguridad
 └── package.json                      # Gestor de dependencias global del monorepo
 ```
@@ -64,34 +65,36 @@ El proyecto funciona como un **Monorepo** y está dividido en dos partes princip
 A diferencia de aplicaciones tradicionales con SQL, _Tasky_ utiliza el sistema de archivos local para persistir el estado de forma limpia:
 
 ```text
-storage/users/default/projects/<projectId>/
-├── info/
-│   └── areas.json                    # Define la jerarquía de Áreas y Chats
-├── rules.md                          # Reglas globales del proyecto (fallback)
-├── ai/
-│   ├── layer1/
-│   │   └── 00-role-and-flow.md      # Capa 1: Rol y orden de ejecución
-│   ├── layer2/
-│   │   ├── summary.md                # Capa 2: Resumen global del proyecto
-│   │   └── areas/
-│   │       └── <areaId>/
-│   │           ├── summary.md        # Resumen del área
-│   │           └── rules.md          # Reglas del área (independientes por área)
-│   └── layer3/
-│       └── qa.md                     # Capa 3: QA/Testing gate
-├── chat/
-│   └── areas/
-│       └── <areaId>/
-│           └── <chatId>.jsonl        # Historial de chat (una línea por mensaje)
-├── history/
-│   └── areas/
-│       └── <areaId>/
-│           └── files/                # Archivos completados del área
-├── tasks/
-│   ├── inbox/                        # Tareas pendientes de completar
-│   └── history/                      # Tareas completadas
-└── files/                            # Todos los archivos generados y subidos por el usuario
-    └── generated/                    # Archivos generados por la IA
+storage/
+├── user-config.json                  # API key guardada desde la UI (gitignored)
+└── users/default/projects/<projectId>/
+    ├── info/
+    │   └── areas.json                # Define la jerarquía de Áreas y Chats
+    ├── rules.md                      # Reglas globales del proyecto (fallback)
+    ├── ai/
+    │   ├── layer1/
+    │   │   └── 00-role-and-flow.md  # Capa 1: Rol y orden de ejecución
+    │   ├── layer2/
+    │   │   ├── summary.md            # Capa 2: Resumen global del proyecto
+    │   │   └── areas/
+    │   │       └── <areaId>/
+    │   │           ├── summary.md    # Resumen del área
+    │   │           └── rules.md      # Reglas del área (independientes por área)
+    │   └── layer3/
+    │       └── qa.md                 # Capa 3: QA/Testing gate
+    ├── chat/
+    │   └── areas/
+    │       └── <areaId>/
+    │           └── <chatId>.jsonl    # Historial de chat (una línea por mensaje)
+    ├── history/
+    │   └── areas/
+    │       └── <areaId>/
+    │           └── files/            # Archivos completados del área
+    ├── tasks/
+    │   ├── inbox/                    # Tareas pendientes de completar
+    │   └── history/                  # Tareas completadas
+    └── files/                        # Todos los archivos generados y subidos por el usuario
+        └── generated/               # Archivos generados por la IA
 ```
 
 ---
@@ -131,57 +134,181 @@ La API cuenta con protecciones para mitigar ataques cibernéticos y posibles fra
 
 ---
 
-## ⚙️ Instalación y Uso Local
+## ⚙️ Instalación paso a paso
 
-### 1. Instalar dependencias
+### 🔧 Requisitos previos
 
-Desde la raíz del proyecto, instala todas las dependencias del monorepo (frontend y backend):
+| Requisito | Versión mínima | Cómo verificarlo |
+|-----------|---------------|------------------|
+| **Node.js** | 22+ | `node --version` |
+| **npm** | 10+ | `npm --version` |
+
+> Tasky usa `??` y `||` combinados (ES2021+) y npm workspaces — Node 22 garantiza compatibilidad total.
+
+---
+
+### 1. Clonar el repositorio
+
+```bash
+git clone https://github.com/tu-usuario/tasky.git
+cd tasky
+```
+
+---
+
+### 2. Instalar dependencias
+
+Este comando instala las dependencias del backend (`apps/api`), del frontend (`apps/web`) y la herramienta `concurrently` para correr ambos a la vez:
 
 ```bash
 npm run install:all
 ```
 
-### 2. Configurar variables de entorno
+> También funciona `npm install` gracias a las npm workspaces definidas en `package.json`.
 
-#### Backend (`apps/api/.env`)
+---
 
-Crea y edita las variables de entorno del backend:
+### 3. Configurar el frontend
 
-```bash
-cp apps/api/.env.example apps/api/.env
-```
-
-Dentro de `apps/api/.env`, asegúrate de tener tu clave de OpenRouter y el modelo correctamente configurado:
-
-```env
-OPENROUTER_API_KEY=tu_clave_aquí
-MODEL=deepseek/deepseek-v4-flash:free
-```
-
-#### Frontend (`apps/web/.env.local`)
-
-Crea el archivo de entorno del frontend:
+Tasky necesita saber dónde está corriendo la API. Creá el archivo de entorno del frontend:
 
 ```bash
 cp apps/web/.env.example apps/web/.env.local
 ```
 
-Dentro de `apps/web/.env.local`:
+El contenido queda así:
 
 ```env
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8787
 ```
 
-### 3. Iniciar la aplicación
+No necesitás tocar nada más — el frontend solo necesita esta variable.
 
-Ejecuta tanto la API como la interfaz web en un solo comando:
+---
+
+### 4. Configurar la API Key de OpenRouter
+
+Tasky usa **OpenRouter** como proveedor de IA (modelos como DeepSeek, Llama, GPT, Claude, etc.). Necesitás una API key. Tenés **dos formas** de configurarla:
+
+#### Opción A: Desde la interfaz web (recomendada)
+
+1. Iniciá la app (paso 5) sin crear `apps/api/.env`
+2. Abrí http://localhost:3000 — se va a mostrar una **pantalla de configuración**
+3. Ingresá tu API key de OpenRouter
+4. Opcional: cambiá el modelo (por defecto usa `nvidia/nemotron-3-ultra-550b-a55b:free`)
+5. Hacé clic en **"Comenzar"**
+6. La app recarga y ya está lista para usar
+
+La key se guarda en `storage/user-config.json` (archivo local, ignorado por git).
+
+#### Opción B: Variables de entorno
+
+Creá el archivo de entorno del backend:
+
+```bash
+cp apps/api/.env.example apps/api/.env
+```
+
+Editá `apps/api/.env` y reemplazá con tu API key:
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-tu_clave_aqui
+MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
+```
+
+> **Nota:** Si existe `apps/api/.env`, la pantalla de setup no aparece — el backend usa directamente las variables de entorno. El archivo `.env` está en `.gitignore` y no se sube al repositorio.
+
+---
+
+### 5. Iniciar la aplicación
+
+Ejecutá ambos servicios (API + frontend) con un solo comando:
 
 ```bash
 npm run dev:all
 ```
 
-- **Frontend (Next.js):** http://localhost:3000
-- **Backend (Express API):** http://localhost:8787/health
+Esto levanta:
+
+| Servicio | URL | Propósito |
+|----------|-----|-----------|
+| **Backend (Express)** | http://localhost:8787 | API REST + generación de archivos |
+| **Frontend (Next.js)** | http://localhost:3000 | Interfaz de usuario |
+
+Verificá que el backend esté funcionando:
+
+```bash
+curl http://localhost:8787/health
+# → {"ok":true}
+```
+
+---
+
+### 🧪 Verificación rápida
+
+Una vez que ambos servicios estén corriendo:
+
+1. Abrí http://localhost:3000 en tu navegador
+2. Si no configuraste `.env` en el backend, deberías ver la **pantalla de setup**
+3. Ingresá tu API key de OpenRouter y hace clic en "Comenzar"
+4. Se debería cargar la interfaz principal con un proyecto por defecto
+5. Escribí un mensaje en el chat para probar que la IA responde
+
+---
+
+### 📁 ¿Dónde se guardan mis datos?
+
+Todo el contenido que generes se almacena en `storage/` (raíz del proyecto):
+
+```
+storage/
+├── user-config.json       # API key (solo si configuraste desde la UI)
+└── users/default/
+        └── projects/
+            └── default/
+                ├── areas.json         # Tus áreas y chats
+                ├── chat/              # Historial de conversaciones
+                └── files/generated/   # Archivos creados por la IA
+```
+
+Podés borrar `storage/` en cualquier momento para resetear la app a su estado inicial.
+
+---
+
+## 🐳 Variables de entorno (referencia completa)
+
+### Backend (`apps/api/.env`)
+
+| Variable | Obligatoria | Default | Descripción |
+|----------|-------------|---------|-------------|
+| `OPENROUTER_API_KEY` | Sí (sin UI) | — | API key de OpenRouter |
+| `MODEL` | No | `nvidia/nemotron-3-ultra-550b-a55b:free` | Modelo por defecto |
+| `PORT` | No | `8787` | Puerto del servidor Express |
+| `APP_URL` | No | `http://localhost:5173` | URL para atribución en OpenRouter |
+
+### Frontend (`apps/web/.env.local`)
+
+| Variable | Obligatoria | Default | Descripción |
+|----------|-------------|---------|-------------|
+| `NEXT_PUBLIC_API_BASE_URL` | Sí | — | URL base del backend Express |
+
+---
+
+## 🗺️ Solución de problemas comunes
+
+| Problema | Causa probable | Solución |
+|----------|---------------|----------|
+| La pantalla de setup no desaparece | API key inválida o backend caído | Verificá que el backend esté en http://localhost:8787 y que la key sea correcta |
+| Error `exports is not defined` | Versión de Node < 22 | Actualizá Node.js a la versión 22 o superior |
+| El chat responde "Error 401" | API key incorrecta o sin saldo | Revisá tu key en https://openrouter.ai/keys |
+| `npm run dev:all` falla | Puerto 3000 o 8787 ocupado | Liberá los puertos o cambiá la configuración |
+| Los archivos generados no aparecen | Ruta de storage incorrecta | Revisá que `storage/` exista en la raíz del proyecto |
+
+---
+
+## 📚 Lecturas complementarias
+
+- [`security.md`](./security.md) — Documentación detallada de seguridad y mitigación de fraudes
 
 ---
 

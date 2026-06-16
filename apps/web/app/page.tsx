@@ -12,15 +12,18 @@ import {
   getAreas,
   updateAreas,
   getChatLog,
-  sendMessageStream,
+  sendMessage,
   getRules,
   getTree,
   getGeneratedHistory,
   downloadFile,
   addToHistory,
   deleteFile,
+  checkApiStatus,
+  saveSetup,
+  fetchModels,
 } from "./lib/api";
-import type { Area, ChatLogEntry, TreeEntry } from "./lib/api";
+import type { Area, ChatLogEntry, TreeEntry, ModelInfo } from "./lib/api";
 import type { ChatMessage } from "./types/chat";
 
 export default function Home() {
@@ -35,6 +38,15 @@ export default function Home() {
   const [sidePanelTab, setSidePanelTab] = useState<"info" | "historial" | "reglas">("info");
   const [loading, setLoading] = useState(false);
 
+  const [setupMode, setSetupMode] = useState(true);
+  const [setupApiKey, setSetupApiKey] = useState("");
+  const [setupModel, setSetupModel] = useState("");
+  const [setupSaving, setSetupSaving] = useState(false);
+  const [setupError, setSetupError] = useState("");
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsFetched, setModelsFetched] = useState(false);
+
   const [treeEntries, setTreeEntries] = useState<TreeEntry[]>([]);
   const [generatedHistory, setGeneratedHistory] = useState<unknown>(null);
   const [rulesContent, setRulesContent] = useState<string>("");
@@ -45,13 +57,21 @@ export default function Home() {
       try {
         const { entries } = await getChatLog(pId, aId, cId);
         setChatMessages(
-          entries.map((e: ChatLogEntry) => ({
-            role: e.role as "user" | "assistant",
-            content: e.content,
-            ts: e.ts as number | undefined,
-            file: e.file as ChatMessage["file"],
-            meta: e.meta as ChatMessage["meta"],
-          }))
+          entries.map((e: ChatLogEntry) => {
+            const rawFile = e.file as Record<string, unknown> | undefined;
+            const file = rawFile?.name
+              ? rawFile as unknown as ChatMessage["file"]
+              : rawFile
+                ? { name: String(rawFile.filename ?? ""), url: String(rawFile.path ?? ""), type: String(rawFile.type ?? ""), meta: String(rawFile.type ?? "").toUpperCase() }
+                : undefined;
+            return {
+              role: e.role as "user" | "assistant",
+              content: e.content,
+              ts: e.ts as number | undefined,
+              file,
+              meta: e.meta as ChatMessage["meta"],
+            } as ChatMessage;
+          })
         );
       } catch {
         setChatMessages([]);
@@ -78,10 +98,6 @@ export default function Home() {
         }
       }
       if (tab === "historial") {
-        if (cached.history) {
-          setGeneratedHistory(cached.history);
-          return;
-        }
         try {
           const hist = await getGeneratedHistory(pId, aId);
           setGeneratedHistory(hist);
@@ -109,6 +125,19 @@ export default function Home() {
 
   useEffect(() => {
     async function init() {
+      try {
+        const status = await checkApiStatus();
+        if (!status.configured) {
+          setSetupMode(true);
+          return;
+        }
+      } catch {
+        setSetupMode(true);
+        return;
+      }
+
+      setSetupMode(false);
+
       try {
       const { projects: projs } = await getProjects();
       let pId: string;
@@ -330,63 +359,42 @@ export default function Home() {
     setInputText("");
     setLoading(true);
 
-    const streamingPlaceholder: ChatMessage = {
-      role: "assistant",
-      content: "",
-      ts: Date.now(),
-    };
-    setChatMessages((prev) => [...prev, userMsg, streamingPlaceholder]);
-
     const allMessages = [...chatMessages, userMsg].map((m) => ({
       role: m.role,
       content: m.content,
     }));
 
-    sendMessageStream(projectId, {
+    setChatMessages((prev) => [...prev, userMsg]);
+    sendMessage(projectId, {
       messages: allMessages,
       areaId: activeAreaId,
       chatId: activeChatId,
-    }, (delta) => {
-      setChatMessages((prev) => {
-        const next = [...prev];
-        const idx = next.length - 1;
-        if (idx < 0 || next[idx].role !== "assistant") return prev;
-        next[idx] = { ...next[idx], content: `${next[idx].content}${delta}` };
-        return next;
-      });
     })
       .then((res) => {
-        setChatMessages((prev) => {
-          const next = [...prev];
-          const idx = next.length - 1;
-          if (idx < 0 || next[idx].role !== "assistant") return prev;
-          next[idx] = {
-            ...next[idx],
-            content: res.content,
-            file: res.file as ChatMessage["file"],
-            meta: res.meta as ChatMessage["meta"],
-            ts: Date.now(),
-          };
-          return next;
-        });
+        const assistantMsg: ChatMessage = {
+          role: "assistant",
+          content: res.content,
+          ts: Date.now(),
+          file: res.file as ChatMessage["file"],
+          meta: res.meta as ChatMessage["meta"],
+        };
+        setChatMessages((prev) => [...prev, assistantMsg]);
       })
       .catch((err) => {
         console.error("Send failed:", err);
-        setChatMessages((prev) => {
-          const next = [...prev];
-          const idx = next.length - 1;
-          if (idx < 0 || next[idx].role !== "assistant") return prev;
-          next[idx] = {
-            ...next[idx],
-            content: "Error al enviar el mensaje. Intenta de nuevo.",
+        const kind = (err as any).kind;
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: kind === "unauthorized"
+              ? "API key inválida o sin fondos."
+              : `Error: ${err instanceof Error ? err.message : "Error del servidor"}`,
             ts: Date.now(),
-          };
-          return next;
-        });
+          },
+        ]);
       })
-      .finally(() => {
-        setLoading(false);
-      });
+      .finally(() => setLoading(false));
   }, [projectId, activeAreaId, activeChatId, chatMessages, inputText]);
 
   const handleToggleSidebar = useCallback(() => {
@@ -504,16 +512,20 @@ export default function Home() {
     [projectId]
   );
 
-  const handleConfirm = useCallback(async () => {
+  const handleConfirm = useCallback(async (msgIndex?: number) => {
     if (!projectId || !activeAreaId) return;
+    const idx = msgIndex ?? chatMessages.length - 1;
+    const msg = chatMessages[idx];
+    const filePath = msg?.file?.url || msg?.file?.name;
+    if (!filePath) return;
     try {
       await addToHistory(projectId, {
+        filePath,
         areaId: activeAreaId,
-        chatId: activeChatId,
       });
       setChatMessages((prev) =>
         prev.map((m, i) =>
-          i === prev.length - 1 && m.meta?.complete
+          i === idx && m.meta?.complete
             ? { ...m, meta: { ...m.meta, complete: false } }
             : m
         )
@@ -521,17 +533,243 @@ export default function Home() {
     } catch (err) {
       console.error("Confirm failed:", err);
     }
-  }, [projectId, activeAreaId, activeChatId]);
+  }, [projectId, activeAreaId, chatMessages]);
 
-  const handleDeny = useCallback(() => {
-    setChatMessages((prev) =>
-      prev.map((m, i) =>
-        i === prev.length - 1 && m.meta?.complete
+  const handleDeny = useCallback((msgIndex?: number) => {
+    setChatMessages((prev) => {
+      const idx = msgIndex ?? prev.length - 1;
+      return prev.map((m, i) =>
+        i === idx && m.meta?.complete
           ? { ...m, meta: { ...m.meta, complete: false } }
           : m
-      )
-    );
+      );
+    });
   }, []);
+
+  const handleFetchModels = useCallback(async () => {
+    if (!setupApiKey.trim()) {
+      setSetupError("Ingresa una API key primero");
+      return;
+    }
+    setModelsLoading(true);
+    setSetupError("");
+    try {
+      const { models: modelList } = await fetchModels(setupApiKey.trim());
+      setModels(modelList);
+      setModelsFetched(true);
+      if (modelList.length > 0) {
+        setSetupModel(modelList[0].id);
+      }
+    } catch (err) {
+      setSetupError(`Error al cargar modelos: ${err instanceof Error ? err.message : "API key inválida"}`);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [setupApiKey]);
+
+  const handleSaveSetup = useCallback(async () => {
+    if (!setupApiKey.trim()) {
+      setSetupError("Ingresa una API key");
+      return;
+    }
+    setSetupSaving(true);
+    setSetupError("");
+    try {
+      await saveSetup(setupApiKey.trim(), setupModel || undefined);
+      setSetupMode(false);
+      window.location.reload();
+    } catch (err) {
+      setSetupError(`Error: ${err instanceof Error ? err.message : "No se pudo guardar la config"}`);
+    } finally {
+      setSetupSaving(false);
+    }
+  }, [setupApiKey, setupModel]);
+
+  if (setupMode) {
+    return (
+      <div className="setup-screen">
+        <div className="setup-card">
+          <h1 className="setup-title">Tasky</h1>
+          <p className="setup-subtitle">
+            Para usar la app necesitás una API key de OpenRouter.
+          </p>
+          <div className="setup-field">
+            <label htmlFor="apiKey">API Key de OpenRouter</label>
+            <input
+              id="apiKey"
+              type="password"
+              placeholder="sk-or-v1-..."
+              value={setupApiKey}
+              onChange={(e) => setSetupApiKey(e.target.value)}
+            />
+          </div>
+          <div className="setup-field">
+            <label htmlFor="model">Modelo</label>
+            {modelsFetched && models.length > 0 ? (
+              <select
+                id="model"
+                value={setupModel}
+                onChange={(e) => setSetupModel(e.target.value)}
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}{m.isFree ? ' (free)' : ''} — {m.id}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="setup-model-row">
+                <input
+                  id="model"
+                  type="text"
+                  placeholder="openai/gpt-oss-120b:free"
+                  value={setupModel}
+                  onChange={(e) => setSetupModel(e.target.value)}
+                />
+                <button
+                  className="setup-fetch-btn"
+                  onClick={handleFetchModels}
+                  disabled={modelsLoading || !setupApiKey.trim()}
+                >
+                  {modelsLoading ? "Cargando..." : "Cargar modelos"}
+                </button>
+              </div>
+            )}
+          </div>
+          {setupError && <p className="setup-error">{setupError}</p>}
+          <button
+            className="setup-btn"
+            onClick={handleSaveSetup}
+            disabled={setupSaving}
+          >
+            {setupSaving ? "Guardando..." : "Comenzar"}
+          </button>
+        </div>
+        <style>{`
+          .setup-screen {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: #0a0a0a;
+            font-family: system-ui, sans-serif;
+          }
+          .setup-card {
+            background: #1a1a1a;
+            padding: 2.5rem;
+            border-radius: 1rem;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+          }
+          .setup-title {
+            font-size: 1.8rem;
+            font-weight: 700;
+            text-align: center;
+            color: #fff;
+            margin: 0 0 0.5rem;
+          }
+          .setup-subtitle {
+            text-align: center;
+            color: #999;
+            font-size: 0.9rem;
+            margin: 0 0 1.5rem;
+            line-height: 1.4;
+          }
+          .setup-field {
+            margin-bottom: 1rem;
+          }
+          .setup-field label {
+            display: block;
+            font-size: 0.85rem;
+            color: #ccc;
+            margin-bottom: 0.35rem;
+          }
+          .setup-field input {
+            width: 100%;
+            padding: 0.65rem 0.75rem;
+            border-radius: 0.5rem;
+            border: 1px solid #333;
+            background: #111;
+            color: #fff;
+            font-size: 0.95rem;
+            box-sizing: border-box;
+          }
+          .setup-field input::placeholder {
+            color: #555;
+          }
+          .setup-field select {
+            width: 100%;
+            padding: 0.65rem 0.75rem;
+            border-radius: 0.5rem;
+            border: 1px solid #333;
+            background: #111;
+            color: #fff;
+            font-size: 0.95rem;
+            box-sizing: border-box;
+            appearance: none;
+            cursor: pointer;
+          }
+          .setup-field select optgroup,
+          .setup-field select option {
+            background: #1a1a1a;
+            color: #ccc;
+            padding: 4px 8px;
+          }
+          .setup-model-row {
+            display: flex;
+            gap: 8px;
+          }
+          .setup-model-row input {
+            flex: 1;
+          }
+          .setup-fetch-btn {
+            padding: 0.65rem 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid #333;
+            background: #222;
+            color: #ccc;
+            font-size: 0.85rem;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.2s, color 0.2s;
+          }
+          .setup-fetch-btn:hover:not(:disabled) {
+            background: #333;
+            color: #fff;
+          }
+          .setup-fetch-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+          }
+          .setup-error {
+            color: #f87171;
+            font-size: 0.85rem;
+            margin: 0 0 1rem;
+          }
+          .setup-btn {
+            width: 100%;
+            padding: 0.7rem;
+            border: none;
+            border-radius: 0.5rem;
+            background: #3b82f6;
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+          }
+          .setup-btn:hover {
+            background: #2563eb;
+          }
+          .setup-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+          }
+        `}</style>
+      </div>
+    );
+  }
 
   const activeArea = areas.find((a) => a.id === activeAreaId);
   const activeAreaName = activeArea?.name || "";

@@ -9,8 +9,8 @@ interface ChatPanelProps {
   chatName: string;
   messages: ChatMessage[];
   loading?: boolean;
-  onConfirm?: () => void;
-  onDeny?: () => void;
+  onConfirm?: (i: number) => void;
+  onDeny?: (i: number) => void;
   onDownload?: (file: ChatMessage["file"]) => void;
 }
 
@@ -110,16 +110,16 @@ function ChatPanel({
                       </div>
                     )}
 
-                    {msg.meta?.complete && (
+                    {msg.file && msg.meta?.complete && (
                       <div style={{ marginTop: 10 }}>
                         <div className="confirm">
                           <span className="q">
                             ¿Agregar este análisis al historial del área?
                           </span>
-                          <button className="yes" onClick={onConfirm}>
+                          <button className="yes" onClick={() => onConfirm?.(i)}>
                             Confirmar
                           </button>
-                          <button className="no" onClick={onDeny}>
+                          <button className="no" onClick={() => onDeny?.(i)}>
                             Denegar
                           </button>
                         </div>

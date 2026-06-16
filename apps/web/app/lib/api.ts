@@ -101,81 +101,6 @@ export async function sendMessage(
   });
 }
 
-export async function sendMessageStream(
-  projectId: string,
-  data: {
-    messages: { role: string; content: string }[];
-    areaId: string;
-    chatId: string;
-    activeTaskPath?: string;
-  },
-  onChunk: (delta: string) => void
-): Promise<ChatResponse> {
-  const res = await fetch(`${BASE_URL}/api/projects/${projectId}/chat/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${text || res.statusText}`);
-  }
-
-  const reader = res.body?.getReader();
-  if (!reader) {
-    throw new Error("No stream body available");
-  }
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let finalResponse: ChatResponse | null = null;
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() || "";
-
-    for (const event of events) {
-      const line = event
-        .split("\n")
-        .find((l) => l.startsWith("data: "));
-      if (!line) continue;
-
-      const payload = line.slice(6);
-      if (payload === "[DONE]") continue;
-
-      let chunk: { type: string; delta?: string; content?: string; id?: string; meta?: object | null; file?: object | null };
-      try {
-        chunk = JSON.parse(payload);
-      } catch {
-        continue;
-      }
-
-      if (chunk.type === "chunk" && chunk.delta) {
-        onChunk(chunk.delta);
-      }
-      if (chunk.type === "done") {
-        finalResponse = {
-          id: chunk.id || crypto.randomUUID(),
-          content: chunk.content || "",
-          meta: chunk.meta ?? null,
-          file: chunk.file ?? null,
-        };
-      }
-    }
-  }
-
-  if (!finalResponse) {
-    throw new Error("Stream ended without final response");
-  }
-
-  return finalResponse;
-}
-
 export async function getRules(
   projectId: string,
   areaId?: string
@@ -362,4 +287,38 @@ export async function setProvider(
 
 export async function healthCheck(): Promise<unknown> {
   return request("/health");
+}
+
+export async function checkApiStatus(): Promise<{
+  ok: boolean;
+  configured: boolean;
+  provider: string;
+  model: string;
+}> {
+  return request("/api/status");
+}
+
+export async function saveSetup(
+  apiKey: string,
+  model?: string
+): Promise<{ ok: boolean; configured: boolean }> {
+  return request("/api/setup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey, model }),
+  });
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  isFree: boolean;
+}
+
+export async function fetchModels(
+  apiKey: string
+): Promise<{ models: ModelInfo[] }> {
+  return request(
+    `/api/models?apiKey=${encodeURIComponent(apiKey)}`
+  );
 }

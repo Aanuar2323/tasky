@@ -19,6 +19,7 @@
  */
 
 import 'dotenv/config';
+import { getApiKey, getModel, saveUserConfig } from './config.js';
 
 /* ==========================================================
    Detección automática del proveedor
@@ -30,11 +31,19 @@ let PROVIDER = process.env.OPENROUTER_API_KEY
     ? 'nvidia'
     : 'none';
 
+// Fallback a config de usuario si no hay env vars
+const USER_API_KEY = PROVIDER === 'none' ? getApiKey() : null;
+const USER_MODEL = PROVIDER === 'none' ? getModel() : null;
+
+if (USER_API_KEY) {
+  PROVIDER = 'openrouter';
+}
+
 const CONFIG = {
   openrouter: {
     baseUrl: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
-    apiKey: process.env.OPENROUTER_API_KEY,
-    model: process.env.MODEL ?? 'openai/gpt-oss-120b:free',
+    apiKey: USER_API_KEY || process.env.OPENROUTER_API_KEY,
+    model: USER_MODEL ?? process.env.MODEL ?? 'openai/gpt-oss-120b:free',
     label: 'OpenRouter',
   },
   nvidia: {
@@ -46,7 +55,7 @@ const CONFIG = {
   none: {
     baseUrl: '',
     apiKey: '',
-    model: process.env.MODEL ?? '',
+    model: '',
     label: 'Sin proveedor',
   },
 };
@@ -61,8 +70,21 @@ export function getActiveConfig() {
   };
 }
 
-// Configuración activa actualizada
-export const { BASE_URL, API_KEY, MODEL, LABEL } = getActiveConfig();
+// Configuración activa — actualizable dinámicamente
+let BASE_URL = getActiveConfig().BASE_URL;
+let API_KEY = getActiveConfig().API_KEY;
+let MODEL = getActiveConfig().MODEL;
+let LABEL = getActiveConfig().LABEL;
+
+function syncExports() {
+  const c = getActiveConfig();
+  BASE_URL = c.BASE_URL;
+  API_KEY = c.API_KEY;
+  MODEL = c.MODEL;
+  LABEL = c.LABEL;
+}
+
+export { BASE_URL, API_KEY, MODEL, LABEL };
 
 // Exportar función para cambiar el proveedor desde el frontend
 export const setProvider = (provider) => {
@@ -70,22 +92,40 @@ export const setProvider = (provider) => {
     PROVIDER = provider;
     const active = CONFIG[PROVIDER];
     console.log(`[LLM] Proveedor actualizado: ${active.label} (${active.model})`);
-    // Actualizar configuración activa
-    Object.assign(exports, getActiveConfig());
+    syncExports();
   }
 };
+
+/** Actualiza la API key y modelo desde el setup del frontend */
+export async function updateApiConfig({ apiKey, model }) {
+  CONFIG.openrouter.apiKey = apiKey;
+  if (model) CONFIG.openrouter.model = model;
+  PROVIDER = 'openrouter';
+  await saveUserConfig({ openrouterApiKey: apiKey, model: model || CONFIG.openrouter.model });
+  syncExports();
+  console.log(`[LLM] Config actualizada via setup: provider=openrouter model=${CONFIG.openrouter.model}`);
+}
 
 // Log informativo al iniciar
 console.log(`[LLM] Proveedor: ${LABEL} | Modelo: ${MODEL} | Base URL: ${BASE_URL}`);
 
 // Exportar configuración disponible para el frontend
 export function getAvailableProviders() {
-  return Object.entries(CONFIG).reduce((acc, [key, config]) => {
+  const result = Object.entries(CONFIG).reduce((acc, [key, config]) => {
     if (key !== 'none' && config.apiKey) {
       acc[key] = { label: config.label, model: config.model };
     }
     return acc;
   }, {});
+  if (PROVIDER !== 'none' && !Object.keys(result).length) {
+    result.openrouter = { label: 'OpenRouter', model: CONFIG.openrouter.model };
+  }
+  return result;
+}
+
+/** Devuelve si el proveedor está configurado y listo */
+export function isConfigured() {
+  return PROVIDER !== 'none' && !!API_KEY && !/your_.*_key_here/i.test(API_KEY);
 }
 
 /* ==========================================================
@@ -335,10 +375,9 @@ async function fetchWithToolsFallback(baseParams, tools) {
  * @returns {{raw: Object, message: Object, usage: Object|null, cost: number|null, generationId: string|null}}
  */
 export async function llmChat({ messages, temperature = 0.2, tools = undefined }) {
-  if (PROVIDER === 'none' || !API_KEY || /your_.*_key_here/i.test(API_KEY)) {
+  if (!isConfigured()) {
     throw new Error(
-      'API key no configurada o sigue siendo el placeholder de .env.example. ' +
-      'Edita apps/api/.env y define OPENROUTER_API_KEY (o NVIDIA_API_KEY) con una clave real.'
+      'API key no configurada. Configurala desde la pantalla de inicio o edita apps/api/.env con tu OPENROUTER_API_KEY.'
     );
   }
 
@@ -426,93 +465,4 @@ export async function llmChat({ messages, temperature = 0.2, tools = undefined }
 // Alias de compatibilidad con el nombre original
 export { llmChat as nvidiaChat };
 
-/* ==========================================================
-   STREAMING — Para frontend en tiempo real
-   ========================================================== */
 
-/**
- * Realiza una petición streaming a /chat/completions.
- * Envia SSE (Server-Sent Events) al frontend. El modelo usado en streaming
- * NO returna JSON estricto (sin response_format), usa texto libre.
- *
- * @param {Object} params
- * @param {Array}  params.messages       — Historial de mensajes (incluye system)
- * @param {number} [params.temperature]  — Temperatura (default: 0.7)
- * @param {number} [params.maxTokens]    — Máximo de tokens (default: 4096)
- * @param {Function} params.onChunk      — Callback por cada fragmento recibido
- * @returns {{fullContent: string, stopped: boolean}}
- */
-export async function llmChatStream({ messages, temperature = 0.7, maxTokens = 4096, onChunk }) {
-  if (PROVIDER === 'none' || !API_KEY || /your_.*_key_here/i.test(API_KEY)) {
-    throw new Error(
-      'API key no configurada. Edita apps/api/.env y define OPENROUTER_API_KEY (o NVIDIA_API_KEY).'
-    );
-  }
-
-  const body = {
-    model: MODEL,
-    messages,
-    temperature,
-    max_tokens: maxTokens,
-    stream: true,
-  };
-
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: buildHeaders(),
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    const kind = classifyError(res.status, text);
-    const err = new Error(`[STREAM] [${res.status}] ${text.slice(0, 600)}`);
-    err.kind = kind;
-    err.status = res.status;
-    throw err;
-  }
-
-  const reader = res.body?.getReader();
-  const decoder = new TextDecoder();
-  let fullContent = '';
-  let done = false;
-
-  if (!reader) {
-    throw new Error('No se pudo obtener el reader del stream');
-  }
-
-  try {
-    while (!done) {
-      const { value, done: readerDone } = await reader.read();
-      done = readerDone;
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed === 'data: [DONE]') continue;
-        if (!trimmed.startsWith('data: ')) continue;
-
-        const dataStr = trimmed.slice(6);
-        if (dataStr === '[DONE]') continue;
-
-        try {
-          const data = JSON.parse(dataStr);
-          const delta = data.choices?.[0]?.delta?.content || '';
-          if (delta) {
-            fullContent += delta;
-            onChunk(delta);
-          }
-        } catch {
-          // Ignorar líneas malformadas del stream
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  return { fullContent, stopped: false };
-}

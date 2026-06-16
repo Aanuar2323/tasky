@@ -1,24 +1,24 @@
 /* Tasky — Workspace app styles */
 
 :root {
-  --bg: #F7F7F5;
-  --surface: #FFFFFF;
-  --fg: #1A1A18;
-  --muted: #888780;
-  --subtle: #B5B3AD;
-  --border: rgba(26, 26, 24, 0.08);
-  --border-strong: rgba(26, 26, 24, 0.14);
+  --bg: #212121;
+  --surface: #2F2F2F;
+  --fg: #ECECEC;
+  --muted: #999999;
+  --subtle: #666666;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
   --accent: #3D4AE7;
-  --accent-soft: rgba(61, 74, 231, 0.08);
-  --accent-edge: rgba(61, 74, 231, 0.22);
-  --hover: #F1EFE8;
-  --user-bubble: #F1EFE8;
+  --accent-soft: rgba(61, 74, 231, 0.15);
+  --accent-edge: rgba(61, 74, 231, 0.3);
+  --hover: #333333;
+  --user-bubble: #2F2F2F;
   --success: #0F6E56;
-  --shell: #1A1A18;
-  --canvas: #ECEAE3;
-  --danger: #B42318;
-  --danger-soft: rgba(180, 35, 24, 0.08);
-  --success-soft: rgba(15, 110, 86, 0.08);
+  --shell: #000000;
+  --canvas: #171717;
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.12);
+  --success-soft: rgba(15, 110, 86, 0.12);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
 }
@@ -390,7 +390,7 @@ body {
 .sidebar {
   grid-area: sidebar;
   width: 200px;
-  background: var(--surface);
+  background: var(--canvas);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -971,7 +971,7 @@ body {
 .sp-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(26, 26, 24, 0.05);
+  background: rgba(0, 0, 0, 0.4);
   opacity: 0;
   pointer-events: none;
   transition: opacity 220ms cubic-bezier(0.23, 1, 0.32, 1);
