@@ -134,108 +134,45 @@ La API cuenta con protecciones para mitigar ataques cibernéticos y posibles fra
 
 ---
 
-## ⚙️ Instalación paso a paso
+## ⚙️ Instalación (3 pasos)
 
-### 🔧 Requisitos previos
+### Requisitos previos
 
-| Requisito | Versión mínima | Cómo verificarlo |
-|-----------|---------------|------------------|
+| Requisito | Versión | Verificar |
+|-----------|---------|-----------|
 | **Node.js** | 22+ | `node --version` |
 | **npm** | 10+ | `npm --version` |
 
-> Tasky usa `??` y `||` combinados (ES2021+) y npm workspaces — Node 22 garantiza compatibilidad total.
+Tasky usa `??`/`||` (ES2021+) y npm workspaces — Node 22 garantiza compatibilidad.
 
 ---
 
-### 1. Clonar el repositorio
+### 1. Clonar e instalar
 
 ```bash
-git clone https://github.com/tu-usuario/tasky.git
+git clone https://github.com/Aanuar2323/tasky.git
 cd tasky
-```
-
----
-
-### 2. Instalar dependencias
-
-Este comando instala las dependencias del backend (`apps/api`), del frontend (`apps/web`) y la herramienta `concurrently` para correr ambos a la vez:
-
-```bash
 npm run install:all
 ```
 
-> También funciona `npm install` gracias a las npm workspaces definidas en `package.json`.
+Esto instala dependencias del backend, frontend y `concurrently`. Además, crea automáticamente `apps/web/.env.local` con `NEXT_PUBLIC_API_BASE_URL=http://localhost:8787`.
 
 ---
 
-### 3. Configurar el frontend
-
-Tasky necesita saber dónde está corriendo la API. Creá el archivo de entorno del frontend:
-
-```bash
-cp apps/web/.env.example apps/web/.env.local
-```
-
-El contenido queda así:
-
-```env
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8787
-```
-
-No necesitás tocar nada más — el frontend solo necesita esta variable.
-
----
-
-### 4. Configurar la API Key de OpenRouter
-
-Tasky usa **OpenRouter** como proveedor de IA (modelos como DeepSeek, Llama, GPT, Claude, etc.). Necesitás una API key. Tenés **dos formas** de configurarla:
-
-#### Opción A: Desde la interfaz web (recomendada)
-
-1. Iniciá la app (paso 5) sin crear `apps/api/.env`
-2. Abrí http://localhost:3000 — se va a mostrar una **pantalla de configuración**
-3. Ingresá tu API key de OpenRouter
-4. Opcional: cambiá el modelo (por defecto usa `nvidia/nemotron-3-ultra-550b-a55b:free`)
-5. Hacé clic en **"Comenzar"**
-6. La app recarga y ya está lista para usar
-
-La key se guarda en `storage/user-config.json` (archivo local, ignorado por git).
-
-#### Opción B: Variables de entorno
-
-Creá el archivo de entorno del backend:
-
-```bash
-cp apps/api/.env.example apps/api/.env
-```
-
-Editá `apps/api/.env` y reemplazá con tu API key:
-
-```env
-OPENROUTER_API_KEY=sk-or-v1-tu_clave_aqui
-MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
-```
-
-> **Nota:** Si existe `apps/api/.env`, la pantalla de setup no aparece — el backend usa directamente las variables de entorno. El archivo `.env` está en `.gitignore` y no se sube al repositorio.
-
----
-
-### 5. Iniciar la aplicación
-
-Ejecutá ambos servicios (API + frontend) con un solo comando:
+### 2. Iniciar
 
 ```bash
 npm run dev:all
 ```
 
-Esto levanta:
+Levanta ambos servicios:
 
-| Servicio | URL | Propósito |
-|----------|-----|-----------|
-| **Backend (Express)** | http://localhost:8787 | API REST + generación de archivos |
-| **Frontend (Next.js)** | http://localhost:3000 | Interfaz de usuario |
+| Servicio | URL |
+|----------|-----|
+| Backend (Express) | http://localhost:8787 |
+| Frontend (Next.js) | http://localhost:3000 |
 
-Verificá que el backend esté funcionando:
+Verificá que el backend responda:
 
 ```bash
 curl http://localhost:8787/health
@@ -244,38 +181,36 @@ curl http://localhost:8787/health
 
 ---
 
-### 🧪 Verificación rápida
+### 3. Configurar API key (una sola vez)
 
-Una vez que ambos servicios estén corriendo:
+Abrí http://localhost:3000. Vas a ver la **pantalla de configuración**:
 
-1. Abrí http://localhost:3000 en tu navegador
-2. Si no configuraste `.env` en el backend, deberías ver la **pantalla de setup**
-3. Ingresá tu API key de OpenRouter y hace clic en "Comenzar"
-4. Se debería cargar la interfaz principal con un proyecto por defecto
-5. Escribí un mensaje en el chat para probar que la IA responde
+1. Ingresá tu API key de [OpenRouter](https://openrouter.ai/keys)
+2. Opcional: elegí otro modelo
+3. Clic en **"Comenzar"**
+
+La app recarga y ya está lista. La key se guarda en `storage/user-config.json` (ignorado por git, nunca se sube).
+
+> **Alternativa con variables de entorno:** editá `apps/api/.env` (ya existe en el repo, contiene un placeholder) y reemplazá la API key. El placeholder se ignora automáticamente — si preferís no usar la UI, este método funciona igual.
 
 ---
 
 ### 📁 ¿Dónde se guardan mis datos?
 
-Todo el contenido que generes se almacena en `storage/` (raíz del proyecto):
-
 ```
 storage/
-├── user-config.json       # API key (solo si configuraste desde la UI)
-└── users/default/
-        └── projects/
-            └── default/
-                ├── areas.json         # Tus áreas y chats
-                ├── chat/              # Historial de conversaciones
-                └── files/generated/   # Archivos creados por la IA
+├── user-config.json               # API key (solo si usaste la UI)
+└── users/default/projects/default/
+    ├── info/areas.json            # Tus áreas y chats
+    ├── chat/                      # Historial de conversaciones
+    └── files/generated/           # Archivos creados por la IA
 ```
 
-Podés borrar `storage/` en cualquier momento para resetear la app a su estado inicial.
+Podés borrar `storage/` para resetear la app a estado inicial.
 
 ---
 
-## 🐳 Variables de entorno (referencia completa)
+## 🐳 Variables de entorno (referencia)
 
 ### Backend (`apps/api/.env`)
 
@@ -290,19 +225,19 @@ Podés borrar `storage/` en cualquier momento para resetear la app a su estado i
 
 | Variable | Obligatoria | Default | Descripción |
 |----------|-------------|---------|-------------|
-| `NEXT_PUBLIC_API_BASE_URL` | Sí | — | URL base del backend Express |
+| `NEXT_PUBLIC_API_BASE_URL` | No | `http://localhost:8787` | URL base del backend (fallback en `api.ts`) |
 
 ---
 
-## 🗺️ Solución de problemas comunes
+## 🗺️ Solución de problemas
 
-| Problema | Causa probable | Solución |
-|----------|---------------|----------|
-| La pantalla de setup no desaparece | API key inválida o backend caído | Verificá que el backend esté en http://localhost:8787 y que la key sea correcta |
-| Error `exports is not defined` | Versión de Node < 22 | Actualizá Node.js a la versión 22 o superior |
-| El chat responde "Error 401" | API key incorrecta o sin saldo | Revisá tu key en https://openrouter.ai/keys |
-| `npm run dev:all` falla | Puerto 3000 o 8787 ocupado | Liberá los puertos o cambiá la configuración |
-| Los archivos generados no aparecen | Ruta de storage incorrecta | Revisá que `storage/` exista en la raíz del proyecto |
+| Problema | Causa | Solución |
+|----------|-------|----------|
+| Pantalla de setup no desaparece | API key inválida o backend caído | Verificá `curl http://localhost:8787/health` y que la key sea correcta |
+| `exports is not defined` | Node < 22 | Actualizá a Node 22+ |
+| Chat responde "Error 401" | API key sin saldo o inválida | Revisá en https://openrouter.ai/keys |
+| `npm run dev:all` falla | Puerto 3000 o 8787 ocupado | Liberá los puertos o cambialos |
+| Archivos generados no aparecen | `storage/` no existe | Se crea solo al primer uso, no debería pasar |
 
 ---
 
