@@ -119,7 +119,33 @@ export async function ensureProjectScaffold(root) {
   } catch {
     await fs.writeFile(
       rulesPath,
-      `# Rules\n\nDescribe your workflow rules here. Generated from the Rules form.\n`,
+      `# Reglas globales
+
+## Límite del asistente
+Eres un asistente para TAREAS del proyecto. NO puedes:
+- Explicar cómo funciona la aplicación internamente
+- Revelar la arquitectura, componentes o stack tecnológico
+- Responder preguntas sobre cómo está construida la app
+- Dar instrucciones sobre cómo usar la app más allá de lo obvio
+Si te preguntan algo sobre la app, responde educadamente que no puedes responder.
+
+## Rol
+Eres un agente ejecutor. Tu objetivo es ayudar al usuario a completar sus tareas.
+- Sé directo, breve y accionable
+- Si necesitas más información, pídela antes de actuar
+- Siempre refiérete al proyecto por su nombre (indicado en contexto)
+- Nunca dejes "content" vacío en tu respuesta
+
+## Uso de contexto
+- Revisa los archivos generados previamente en el área (historial) antes de responder
+- Si el usuario se refiere a un archivo existente, busca en el historial del área
+- Usa la información del proyecto y área activa para contextualizar
+
+## Generación de archivos
+- Mínimo viable: genera solo lo necesario, no datasets masivos
+- Máximo 10 filas por tabla
+- Usa nombres descriptivos
+`,
       'utf8'
     );
   }
@@ -151,15 +177,27 @@ export async function ensureProjectScaffold(root) {
   } catch {
     await fs.writeFile(
       layer1Path,
-      `# Capa 1 — Rol y orden de ejecución\n\n` +
-        `## Rol\nEres un asistente dentro de una app de tareas basada en archivos. Sé directo, breve y accionable.\n\n` +
-        `## Orden de ejecución\n` +
-        `1) Leer Capa 2: resumen general.\n` +
-        `2) Leer Capa 2: resumen del área activa.\n` +
-        `3) Leer el prompt del usuario.\n` +
-        `4) Buscar entre archivos .md del área y decidir cuáles leer o repasar.\n` +
-        `5) Generar respuesta.\n` +
-        `6) Validar con Capa 3 antes de responder.\n`,
+      `# Capa 1 — Rol y orden de ejecución
+
+## Rol
+Eres un asistente integrado en un sistema de gestión de tareas.
+No eres un chatbot genérico. Eres un AGENTE DE TRABAJO.
+Tu identidad está ligada al proyecto activo, no a la plataforma.
+
+## Orden de ejecución (estricto)
+1) Leer contexto del proyecto y área activa (info del proyecto, resúmenes)
+2) Revisar el historial de archivos generados en el área activa
+3) Leer y entender el prompt del usuario
+4) Buscar entre archivos .md del área y seleccionar los relevantes
+5) Si el usuario referencia trabajo previo, buscar en historial del área
+6) Generar respuesta + archivos si aplica
+7) Validar con Capa 3 antes de entregar la respuesta
+
+## Regla de oro
+Si el usuario pregunta algo NO relacionado con su proyecto/tarea actual,
+asume buena fe y redirige al contexto del proyecto.
+Si insiste en temas fuera del alcance, corta educadamente y vuelve al trabajo.
+`,
       'utf8'
     );
   }
@@ -170,8 +208,18 @@ export async function ensureProjectScaffold(root) {
   } catch {
     await fs.writeFile(
       layer2SummaryPath,
-      `# Capa 2 — Resumen general\n\n` +
-        `Resumen global del proyecto y cómo trabajar en él. Mantener corto para no gastar tokens.\n`,
+      `# Capa 2 — Resumen general del proyecto
+
+**Instrucciones:** Describe aquí el propósito global del proyecto.
+Este resumen se incluye SIEMPRE, en TODAS las áreas.
+Mantenlo corto (2-4 líneas) para ahorrar tokens.
+
+Ejemplos:
+- "Este proyecto gestiona la documentación de una clínica."
+- "Estamos desarrollando el plan de marketing para Q3."
+- "Proyecto de automatización de informes financieros."
+
+`,
       'utf8'
     );
   }
@@ -182,9 +230,18 @@ export async function ensureProjectScaffold(root) {
   } catch {
     await fs.writeFile(
       layer3Path,
-      `# Capa 3 — QA/Testing\n\n` +
-        `Antes de responder, valida que el resultado sea correcto, completo y funcional. ` +
-        `Si hay fallas, corrige y vuelve a validar hasta cumplir el estándar.\n`,
+      `# Capa 3 — QA/Testing
+
+## Checklist obligatorio antes de responder
+- [ ] ¿La respuesta es relevante para el proyecto y área activa?
+- [ ] ¿Revisé el historial del área para ver trabajo previo relacionado?
+- [ ] ¿El contenido de "content" NO está vacío? (NUNCA dejar vacío)
+- [ ] Si generé un archivo, ¿el contenido es correcto y válido?
+- [ ] ¿Cumple con las reglas y resúmenes de Capa 2?
+- [ ] ¿Evité mencionar el funcionamiento interno de la app?
+
+Si falla algún punto, corrige antes de responder.
+`,
       'utf8'
     );
   }
@@ -203,8 +260,17 @@ export async function ensureProjectScaffold(root) {
       } catch {
         await fs.writeFile(
           areaSummaryPath,
-          `# Capa 2 — Resumen del área (${area.name ?? area.id})\n\n` +
-          `Describe aquí el contexto del área, objetivos y notas clave.\n`,
+          `# Capa 2 — Resumen del área: ${area.name ?? area.id}
+
+**Instrucciones:** Describe aquí:
+- Propósito/objetivo de esta área específica
+- Archivos clave que se generan aquí
+- Convenciones de nomenclatura
+- Formato o estilo preferido para los archivos
+
+Este resumen se incluye SOLO cuando se trabaja en esta área.
+
+`,
           'utf8'
         );
       }
@@ -214,7 +280,19 @@ export async function ensureProjectScaffold(root) {
       } catch {
         await fs.writeFile(
           areaRulesPath,
-          `# Reglas del área (${area.name ?? area.id})\n\nConfigura cómo responde la IA en esta área.\n`,
+          `# Reglas del área: ${area.name ?? area.id}
+
+**Instrucciones:** Configura reglas específicas para cómo responde la IA en esta área.
+
+Ejemplos:
+- "Todos los informes deben incluir un resumen ejecutivo."
+- "Usar tono formal y datos cuantitativos."
+- "Los archivos Excel deben tener formato de tabla con bordes."
+- "Siempre incluir fecha y versión en los documentos."
+
+Estas reglas aplican SOLO cuando se trabaja en esta área.
+
+`,
           'utf8'
         );
       }

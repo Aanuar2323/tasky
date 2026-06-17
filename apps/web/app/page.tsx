@@ -6,6 +6,7 @@ import Sidebar from "./components/Sidebar";
 import ChatPanel from "./components/ChatPanel";
 import Composer from "./components/Composer";
 import SidePanel from "./components/SidePanel";
+import ModelBar from "./components/ModelBar";
 import {
   getProjects,
   createProject,
@@ -13,15 +14,21 @@ import {
   updateAreas,
   getChatLog,
   sendMessage,
-  getRules,
+  createTask,
+  addToHistory,
   getTree,
   getGeneratedHistory,
-  downloadFile,
-  addToHistory,
-  deleteFile,
+  getRules,
+  updateRules,
   checkApiStatus,
   saveSetup,
   fetchModels,
+  updateModel,
+  deleteFile,
+  uploadFile,
+  downloadFile,
+  deleteChat,
+  deleteArea,
 } from "./lib/api";
 import type { Area, ChatLogEntry, TreeEntry, ModelInfo } from "./lib/api";
 import type { ChatMessage } from "./types/chat";
@@ -43,6 +50,7 @@ export default function Home() {
   const [setupModel, setSetupModel] = useState("");
   const [setupSaving, setSetupSaving] = useState(false);
   const [setupError, setSetupError] = useState("");
+  const [currentModel, setCurrentModel] = useState("");
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsFetched, setModelsFetched] = useState(false);
@@ -131,6 +139,7 @@ export default function Home() {
           setSetupMode(true);
           return;
         }
+        setCurrentModel(status.model || "");
       } catch {
         setSetupMode(true);
         return;
@@ -522,6 +531,7 @@ export default function Home() {
       await addToHistory(projectId, {
         filePath,
         areaId: activeAreaId,
+        summary: msg?.meta?.summary ?? '',
       });
       setChatMessages((prev) =>
         prev.map((m, i) =>
@@ -584,6 +594,28 @@ export default function Home() {
       setSetupSaving(false);
     }
   }, [setupApiKey, setupModel]);
+
+  const handleChangeModel = useCallback(async (model: string) => {
+    try {
+      await updateModel(model);
+      setCurrentModel(model);
+    } catch (err) {
+      console.error("Error cambiando modelo:", err);
+    }
+  }, []);
+
+  const handleFetchModelsInApp = useCallback(async () => {
+    setModelsLoading(true);
+    try {
+      const { models: modelList } = await fetchModels("");
+      setModels(modelList);
+      setModelsFetched(true);
+    } catch (err) {
+      console.error("Error cargando modelos:", err);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
 
   if (setupMode) {
     return (
@@ -830,6 +862,15 @@ export default function Home() {
             onSend={handleSend}
             onAttach={handleAttach}
           />
+          {!setupMode && (
+            <ModelBar
+              currentModel={currentModel}
+              models={models}
+              modelsLoading={modelsLoading}
+              onFetchModels={handleFetchModelsInApp}
+              onChangeModel={handleChangeModel}
+            />
+          )}
         </main>
       </div>
     </div>

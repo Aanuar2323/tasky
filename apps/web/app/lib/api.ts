@@ -322,3 +322,13 @@ export async function fetchModels(
     `/api/models?apiKey=${encodeURIComponent(apiKey)}`
   );
 }
+
+export async function updateModel(
+  model: string
+): Promise<{ ok: boolean; model: string }> {
+  return request("/api/model", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+}

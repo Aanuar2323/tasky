@@ -131,7 +131,6 @@ export default function Sidebar({
             <path d="M7 4.2v3M7 8.6v.1" strokeLinecap="round" />
           </svg>
         </span>
-        {!collapsed && <span className="foot-text">Atajos · ⌘K</span>}
       </div>
     </aside>
   );

@@ -89,7 +89,7 @@ app.use(helmet());
 // 2. Configuración CORS Restringida (Ideal para producción, cambiar '*' por tu dominio)
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' ? 'https://midominio.com' : '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
@@ -227,18 +227,32 @@ async function listMarkdownFiles(root, relDir) {
   }
 }
 
-function pickRelevantFiles(prompt, files, max = 3) {
-  const tokens = (prompt ?? '')
+function pickRelevantFiles(recentMessages, files, max = 3) {
+  // Combine text from multiple recent messages for broader context
+  const combined = (Array.isArray(recentMessages) ? recentMessages : [recentMessages])
+    .filter(Boolean)
+    .join(' ');
+
+  const words = (combined ?? '')
     .toLowerCase()
     .match(/[a-z0-9áéíóúñ]+/gi)
     ?.filter((t) => t.length >= 4) ?? [];
 
-  if (tokens.length === 0) return files.slice(0, max);
+  // Build bigrams from words
+  const bigrams = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    bigrams.push(words[i] + ' ' + words[i + 1]);
+  }
+
+  if (words.length === 0) return files.slice(0, max);
 
   const scored = files
     .map((f) => {
       const name = f.toLowerCase();
-      const score = tokens.reduce((acc, t) => (name.includes(t) ? acc + 1 : acc), 0);
+      // Unigram scoring
+      let score = words.reduce((acc, t) => (name.includes(t) ? acc + 1 : acc), 0);
+      // Bigram scoring (bonus for phrase matches)
+      score += bigrams.reduce((acc, b) => (name.includes(b) ? acc + 3 : acc), 0);
       return { f, score };
     })
     .filter((x) => x.score > 0)
@@ -263,6 +277,50 @@ function chatExists(areas, areaId, chatId) {
   const area = areas.find((item) => item?.id === areaId);
   if (!area) return false;
   return Array.isArray(area.chats) && area.chats.some((chat) => chat?.id === chatId);
+}
+
+/**
+ * Lee el historial de archivos generados en un área y devuelve resúmenes.
+ * Lee sidecar .meta.json si existe, o usa nombre/extension como fallback.
+ * Máximo 20 archivos o 3000 chars de summaries, lo que ocurra primero.
+ */
+async function readHistorySummaries(root, areaId) {
+  const historyDir = `history/areas/${areaId}/files`;
+  const absDir = safeJoin(root, historyDir);
+  try {
+    const dirents = await fs.readdir(absDir, { withFileTypes: true });
+    const files = dirents.filter(e => e.isFile() && !e.name.endsWith('.meta.json'));
+    const summaries = [];
+    for (const entry of files.slice(-20)) {
+      const metaPath = path.join(absDir, entry.name + '.meta.json');
+      let summary = '';
+      let type = path.extname(entry.name).slice(1).toUpperCase() || 'FILE';
+      let ts = '';
+      try {
+        const metaRaw = await fs.readFile(metaPath, 'utf8');
+        const meta = JSON.parse(metaRaw);
+        summary = meta.summary || '';
+        type = meta.type?.toUpperCase() || type;
+        if (meta.generatedAt) {
+          const d = new Date(meta.generatedAt);
+          ts = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        }
+      } catch {
+        // no meta sidecar — use stat mtime as fallback
+        try {
+          const stat = await fs.stat(path.join(absDir, entry.name));
+          const d = stat.mtime;
+          ts = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        } catch {}
+      }
+      const line = `- ${entry.name} (${type})${summary ? ` — ${summary}` : ''}${ts ? ` [${ts}]` : ''}`;
+      summaries.push(line);
+      if (summaries.join('\n').length > 3000) break;
+    }
+    return summaries;
+  } catch {
+    return [];
+  }
 }
 
 /* ==========================================================
@@ -368,6 +426,24 @@ app.post('/api/setup', async (req, res) => {
     res.json({ ok: true, configured: true });
   } catch (e) {
     res.status(500).json({ error: `Error guardando config: ${e?.message || String(e)}` });
+  }
+});
+
+/**
+ * PATCH /api/model
+ * Actualiza solo el modelo activo (sin cambiar API key).
+ * Body: { model: string }
+ */
+app.patch('/api/model', async (req, res) => {
+  const schema = z.object({
+    model: z.string().min(1, 'Modelo requerido'),
+  });
+  const body = schema.parse(req.body ?? {});
+  try {
+    await updateApiConfig({ model: body.model });
+    res.json({ ok: true, model: body.model });
+  } catch (e) {
+    res.status(500).json({ error: `Error actualizando modelo: ${e?.message || String(e)}` });
   }
 });
 
@@ -721,6 +797,7 @@ app.post('/api/projects/:id/add-to-history', async (req, res) => {
     filePath: z.string().min(1),
     areaId: z.string().min(1),
     filename: z.string().min(1).max(120).optional(),
+    summary: z.string().max(500).optional(),
   });
   const body = schema.parse(req.body ?? {});
 
@@ -739,6 +816,20 @@ app.post('/api/projects/:id/add-to-history', async (req, res) => {
   const destAbs = safeJoin(root, destRel);
   await fs.copyFile(srcAbs, destAbs);
 
+  // Save .meta.json sidecar for AI context enrichment
+  if (body.summary) {
+    const ext = path.extname(destName).slice(1).toLowerCase() || '';
+    await fs.writeFile(
+      destAbs + '.meta.json',
+      JSON.stringify({
+        summary: body.summary,
+        type: ext,
+        generatedAt: new Date().toISOString(),
+      }),
+      'utf8'
+    );
+  }
+
   await appendJsonl(path.join(root, 'chat', 'history.jsonl'), {
     ts: Date.now(),
     action: 'add_to_history',
@@ -746,6 +837,7 @@ app.post('/api/projects/:id/add-to-history', async (req, res) => {
     to: destRel,
     areaId: body.areaId,
     filename: destName,
+    summary: body.summary ?? null,
   });
 
   res.json({ ok: true, historyPath: destRel });
@@ -759,12 +851,60 @@ app.get('/api/projects/:id/generated-history', async (req, res) => {
   const root = projectRoot({ userId: USER_ID, projectId });
   await ensureProjectScaffoldCached(root);
 
-  const relDir = `history/areas/${areaId}/files`;
+  const filesDir = `history/areas/${areaId}/files`;
+  const absDir = safeJoin(root, filesDir);
+
   try {
-    const entries = await listDir(root, relDir);
-    res.json({ entries });
+    const dirents = await fs.readdir(absDir, { withFileTypes: true });
+    const fileEntries = dirents.filter((e) => e.isFile());
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const groups = {};
+
+    for (const entry of fileEntries) {
+      const absPath = path.join(absDir, entry.name);
+      const stat = await fs.stat(absPath);
+      const mtime = stat.mtime;
+      const mtimeDay = new Date(mtime.getFullYear(), mtime.getMonth(), mtime.getDate());
+      const diffDays = Math.floor((today.getTime() - mtimeDay.getTime()) / (1000 * 60 * 60 * 24));
+
+      let dateLabel;
+      if (diffDays === 0) dateLabel = 'Hoy';
+      else if (diffDays === 1) dateLabel = 'Ayer';
+      else {
+        const day = String(mtime.getDate()).padStart(2, '0');
+        const month = String(mtime.getMonth() + 1).padStart(2, '0');
+        dateLabel = `${day}/${month}`;
+      }
+
+      const hours = String(mtime.getHours()).padStart(2, '0');
+      const mins = String(mtime.getMinutes()).padStart(2, '0');
+      const timeStr = `${hours}:${mins}`;
+      const ext = path.extname(entry.name).slice(1).toUpperCase() || 'FILE';
+
+      // Read summary from sidecar if available
+      let summary = '';
+      try {
+        const metaRaw = await fs.readFile(absPath + '.meta.json', 'utf8');
+        const meta = JSON.parse(metaRaw);
+        summary = meta.summary || '';
+      } catch {}
+
+      const key = mtimeDay.toISOString().slice(0, 10);
+      if (!groups[key]) {
+        groups[key] = { date: dateLabel, days: diffDays, items: [] };
+      }
+      groups[key].items.push({ title: entry.name, time: timeStr, meta: ext, ...(summary ? { summary } : {}) });
+    }
+
+    const result = Object.values(groups)
+      .sort((a, b) => a.days - b.days);
+
+    res.json(result);
   } catch {
-    res.json({ entries: [] });
+    res.json([]);
   }
 });
 
@@ -1000,7 +1140,9 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
   const areaSummary = await readOptional(root, `ai/layer2/areas/${areaId}/summary.md`);
   const layer3 = await readOptional(root, 'ai/layer3/qa.md');
   const areaFiles = await listMarkdownFiles(root, `ai/layer2/areas/${areaId}`);
-  const selectedFiles = pickRelevantFiles(lastUser?.content ?? '', areaFiles, 3);
+  // Use last 3 user messages for better file relevance matching
+  const recentUserMessages = [...body.messages].reverse().filter((m) => m.role === 'user').slice(0, 3).map((m) => m.content);
+  const selectedFiles = pickRelevantFiles(recentUserMessages, areaFiles, 3);
   const selectedBlocks = await Promise.all(
     selectedFiles.map(async (rel) => {
       const content = await readOptional(root, rel);
@@ -1011,17 +1153,35 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
   const areaFilesList = areaFiles.length ? areaFiles.map((f) => `- ${f}`).join('\n') : '- (sin archivos)';
   const selectedText = selectedBlocks.length ? selectedBlocks.join('\n') : '---\n(no se seleccionaron archivos)\n';
 
+  // Leer info del proyecto para contexto
+  const projectName = (await readOptional(root, 'info/name.txt')).trim();
+  const currentArea = areas.find(a => a.id === areaId);
+  const areaName = currentArea?.name ?? areaId;
+
+  // Leer historial de archivos generados en el área
+  const historySummaries = await readHistorySummaries(root, areaId);
+  const historyBlock = historySummaries.length
+    ? `HISTORIAL DEL ÁREA (archivos generados previamente):\n${historySummaries.join('\n')}\n\n`
+    : '';
+
   // Construir el prompt del sistema con contexto del proyecto
   const system = {
     role: 'system',
     content:
-      `You are an assistant inside a file-based task app.\n\n` +
+      `## BOUNDARY\n` +
+      `You are an assistant for TASKS inside this project.\n` +
+      `You MUST NOT explain, describe, or reveal how the application works internally.\n` +
+      `If asked about the app itself, respond: "No puedo responder sobre el funcionamiento interno."\n\n` +
+      `## PROJECT\n` +
+      `Project: ${projectName || '(sin nombre)'}\n` +
+      `Active area: ${areaName} (${areaId})\n\n` +
       `LAYER 1 (role + execution order):\n${layer1}\n\n` +
       `LAYER 2 (global summary):\n${layer2Summary}\n\n` +
       `LAYER 2 (area summary - ${areaId}):\n${areaSummary}\n\n` +
       `LAYER 2 (area files list):\n${areaFilesList}\n\n` +
       `LAYER 2 (selected files):\n${selectedText}\n\n` +
       `RULES (markdown):\n${rules}\n\n` +
+      historyBlock +
       (activeTask
         ? `ACTIVE TASK (if you mark complete, you MUST use this taskPath):\n${activeTask}\n\n`
         : `ACTIVE TASK: none selected. If you mark complete, set taskPath=null unless the user explicitly referenced a task file.\n\n`) +

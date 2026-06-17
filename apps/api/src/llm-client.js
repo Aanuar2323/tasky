@@ -25,13 +25,16 @@ import { getApiKey, getModel, saveUserConfig } from './config.js';
    Detección automática del proveedor
    ========================================================== */
 
-let PROVIDER = process.env.OPENROUTER_API_KEY
-  ? 'openrouter'
-  : process.env.NVIDIA_API_KEY
-    ? 'nvidia'
-    : 'none';
+function isRealKey(key) {
+  return key && !/your_.*_key_here/i.test(key);
+}
 
-// Fallback a config de usuario si no hay env vars
+const envOpenRouterKey = isRealKey(process.env.OPENROUTER_API_KEY) ? process.env.OPENROUTER_API_KEY : null;
+const envNvidiaKey = isRealKey(process.env.NVIDIA_API_KEY) ? process.env.NVIDIA_API_KEY : null;
+
+let PROVIDER = envOpenRouterKey ? 'openrouter' : envNvidiaKey ? 'nvidia' : 'none';
+
+// Fallback a config de usuario si no hay env vars reales
 const USER_API_KEY = PROVIDER === 'none' ? getApiKey() : null;
 const USER_MODEL = PROVIDER === 'none' ? getModel() : null;
 
@@ -42,13 +45,13 @@ if (USER_API_KEY) {
 const CONFIG = {
   openrouter: {
     baseUrl: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
-    apiKey: USER_API_KEY || process.env.OPENROUTER_API_KEY,
+    apiKey: USER_API_KEY || envOpenRouterKey,
     model: USER_MODEL ?? process.env.MODEL ?? 'openai/gpt-oss-120b:free',
     label: 'OpenRouter',
   },
   nvidia: {
     baseUrl: process.env.NVIDIA_BASE_URL ?? 'https://integrate.api.nvidia.com/v1',
-    apiKey: process.env.NVIDIA_API_KEY,
+    apiKey: envNvidiaKey,
     model: process.env.MODEL ?? 'z-ai/glm-5.1',
     label: 'NVIDIA NIM',
   },
@@ -96,14 +99,17 @@ export const setProvider = (provider) => {
   }
 };
 
-/** Actualiza la API key y modelo desde el setup del frontend */
+/** Actualiza API key y/o modelo. Soporta partial update (solo modelo). */
 export async function updateApiConfig({ apiKey, model }) {
-  CONFIG.openrouter.apiKey = apiKey;
+  if (apiKey) CONFIG.openrouter.apiKey = apiKey;
   if (model) CONFIG.openrouter.model = model;
   PROVIDER = 'openrouter';
-  await saveUserConfig({ openrouterApiKey: apiKey, model: model || CONFIG.openrouter.model });
+  await saveUserConfig({
+    openrouterApiKey: apiKey || getApiKey(),
+    model: model || CONFIG.openrouter.model,
+  });
   syncExports();
-  console.log(`[LLM] Config actualizada via setup: provider=openrouter model=${CONFIG.openrouter.model}`);
+  console.log(`[LLM] Config actualizada: provider=openrouter model=${CONFIG.openrouter.model}`);
 }
 
 // Log informativo al iniciar

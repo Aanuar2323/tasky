@@ -73,13 +73,13 @@ function ChatPanel({
 
         return (
           <div key={i} className={`msg ${isUser ? "user" : "ai"}`}>
-            <div className="avatar">{isUser ? "M" : "T"}</div>
+            <div className="avatar">{isUser ? "U" : "T"}</div>
             <div style={{ minWidth: 0 }}>
               <div
                 className="role"
                 style={isUser ? { justifyContent: "flex-end" } : undefined}
               >
-                  {isUser ? "María" : "Tasky"}
+                  {isUser ? "User" : "Tasky"}
                 {time && (
                   <span className="when">· {time}</span>
                 )}

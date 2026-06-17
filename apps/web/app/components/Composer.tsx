@@ -67,7 +67,7 @@ export default function Composer({
         />
         <button
           className="send"
-          data-tip="Enviar (⌘↩)"
+          data-tip="Enviar"
           aria-label="Enviar"
           onClick={onSend}
         >
@@ -81,19 +81,7 @@ export default function Composer({
       </div>
       <div className="meta">
         <span>Tasky</span>
-        <span className="right">
-          <span>
-            Adjuntar con{" "}
-            <span className="kbd">⌘</span>
-            <span className="kbd">⇧</span>
-            <span className="kbd">A</span>
-          </span>
-          <span>
-            Enviar con{" "}
-            <span className="kbd">⌘</span>
-            <span className="kbd">↩</span>
-          </span>
-        </span>
+        <span className="right" />
       </div>
     </div>
   );

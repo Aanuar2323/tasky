@@ -275,8 +275,8 @@ export default function Topbar({
             <path d="M8 5.5v3M8 8.5v.1" strokeLinecap="round" />
           </svg>
         </button>
-        <div className="user-avatar" data-tip="María · @Empresa">
-          M
+        <div className="user-avatar">
+          U
         </div>
       </div>
     </header>

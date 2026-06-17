@@ -7,6 +7,7 @@ export interface ChatFile {
 
 export interface ChatMeta {
   complete?: boolean;
+  summary?: string;
 }
 
 export interface ChatMessage {
