@@ -159,17 +159,17 @@ Tasky usa `??`/`||` (ES2021+) y npm workspaces. Node 22 garantiza compatibilidad
 ```bash
 git clone https://github.com/Aanuar2323/tasky.git
 cd tasky
-npm run install:all
+npm install
 ```
 
-El comando `install:all` instala todas las dependencias (monorepo, backend y frontend) y ademas ejecuta el `postinstall`, que copia automaticamente los archivos `.env` desde los templates:
+El comando `install` instala todas las dependencias (monorepo, backend y frontend) y ademas ejecuta el `postinstall`, que copia automaticamente los archivos `.env` desde los templates:
 
 - `apps/web/.env.example` -> `apps/web/.env.local`
 - `apps/api/.env.example` -> `apps/api/.env`
 
 No necesitas editar ningun `.env` para empezar. La API key se configura desde la interfaz grafica en el siguiente paso.
 
-**Problema comun:** Si ves `sh: line 1: concurrently: command not found`, las dependencias no se instalaron. Vuelve a ejecutar `npm run install:all`.
+**Problema comun:** Si ves `sh: line 1: concurrently: command not found`, las dependencias no se instalaron. Vuelve a ejecutar `npm install`.
 
 ---
 
