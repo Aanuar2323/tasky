@@ -1368,6 +1368,8 @@ app.post('/api/projects/:id/complete', async (req, res) => {
 // Asegurar que el storage exista antes de empezar a escuchar peticiones
 await ensureRoot();
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`API listening on http://localhost:${PORT}`);
 });
+
+export { app, server };

@@ -4,13 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test -ws",
     "dev": "npm run dev -ws",
     "build": "npm run build -ws",
     "lint": "npm run lint -ws",
     "dev:all": "concurrently -n API,WEB -c cyan,magenta \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
     "install:all": "npm i -ws",
-    "postinstall": "cp -n apps/web/.env.example apps/web/.env.local"
+    "postinstall": "cp -n apps/web/.env.example apps/web/.env.local && cp -n apps/api/.env.example apps/api/.env"
   },
   "keywords": [],
   "author": "",
