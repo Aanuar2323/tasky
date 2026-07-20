@@ -11,6 +11,10 @@ storage/
 # build
 apps/web/dist/
 apps/api/dist/
+apps/desktop/dist/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/node*
 
 .DS_Store
 
