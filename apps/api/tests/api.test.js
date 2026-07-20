@@ -55,6 +55,11 @@ describe('API Endpoints', async () => {
       assert.ok('configured' in body);
       assert.ok('provider' in body);
       assert.ok('model' in body);
+      assert.ok('providerId' in body);
+      assert.ok('availableProviders' in body);
+      assert.ok('openrouterConfigured' in body);
+      assert.ok('nvidiaConfigured' in body);
+      assert.equal(typeof body.availableProviders, 'object');
     });
   });
 
@@ -64,6 +69,40 @@ describe('API Endpoints', async () => {
       assert.equal(res.status, 200);
       const body = await res.json();
       assert.ok('providers' in body);
+      assert.ok('activeProvider' in body);
+      assert.equal(typeof body.providers, 'object');
+      assert.ok('openrouter' in body.providers);
+      assert.ok('nvidia' in body.providers);
+    });
+  });
+
+  describe('POST /api/provider/keys', () => {
+    it('accepts valid provider key', async () => {
+      const res = await fetch_('/api/provider/keys', {
+        method: 'POST',
+        body: JSON.stringify({ provider: 'nvidia', apiKey: 'nvapi-test-key-12345678' }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.ok, true);
+    });
+
+    it('rejects missing apiKey', async () => {
+      const res = await fetch_('/api/provider/keys', {
+        method: 'POST',
+        body: JSON.stringify({ provider: 'nvidia' }),
+      });
+      assert.ok(res.status === 400 || res.status === 500);
+    });
+  });
+
+  describe('GET /api/models', () => {
+    it('returns models or error depending on configuration', async () => {
+      const res = await fetch_('/api/models');
+      // Without explicit provider param, uses active provider.
+      // If a provider is configured the endpoint attempts upstream;
+      // if not, returns 400.
+      assert.ok(res.status === 200 || res.status === 400 || res.status === 502);
     });
   });
 
@@ -261,7 +300,7 @@ describe('API Endpoints', async () => {
     it('POST /api/setup accepts valid config', async () => {
       const res = await fetch_('/api/setup', {
         method: 'POST',
-        body: JSON.stringify({ apiKey: 'sk-valid-key-here-at-least-10-chars' }),
+        body: JSON.stringify({ apiKey: 'sk-valid-key-here-at-least-10-chars', provider: 'openrouter' }),
       });
       assert.equal(res.status, 200);
       const body = await res.json();

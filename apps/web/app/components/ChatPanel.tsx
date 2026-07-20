@@ -2,6 +2,7 @@
 
 import { memo, useRef, useEffect } from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
+import ErrorPill from "./ErrorPill";
 import type { ChatMessage } from "../types/chat";
 
 interface ChatPanelProps {
@@ -12,6 +13,7 @@ interface ChatPanelProps {
   onConfirm?: (i: number) => void;
   onDeny?: (i: number) => void;
   onDownload?: (file: ChatMessage["file"]) => void;
+  onRetry?: (i: number) => void;
 }
 
 function formatTime(ts?: number) {
@@ -41,6 +43,7 @@ function ChatPanel({
   onConfirm,
   onDeny,
   onDownload,
+  onRetry,
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -87,6 +90,14 @@ function ChatPanel({
               <div className="bubble">
                 {isUser ? (
                   msg.content
+                ) : msg.error ? (
+                  <ErrorPill
+                    title={msg.error.title}
+                    hint={msg.error.hint}
+                    codes={msg.error.codes}
+                    retriable={msg.error.retriable}
+                    onRetry={() => onRetry?.(i)}
+                  />
                 ) : (
                   <div className="content">
                     <MarkdownRenderer content={msg.content} />

@@ -1,5 +1,25 @@
 const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787";
 
+export interface ApiErrorBody {
+  kind?: string;
+  retriable?: boolean;
+  upstreamStatus?: number | null;
+  provider?: string | null;
+  errorHuman?: { title: string; hint: string; codes: number[]; retriable?: boolean } | null;
+}
+
+type ApiError = Error & Required<ApiErrorBody>;
+
+function enrichError(err: Error, body: ApiErrorBody | null): ApiError {
+  return Object.assign(err, {
+    kind: body?.kind ?? 'unknown',
+    retriable: body?.retriable ?? false,
+    upstreamStatus: body?.upstreamStatus ?? null,
+    provider: body?.provider ?? null,
+    errorHuman: body?.errorHuman ?? null,
+  }) as ApiError;
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {}
@@ -7,7 +27,9 @@ async function request<T>(
   const res = await fetch(`${BASE_URL}${path}`, options);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${text || res.statusText}`);
+    let body: ApiErrorBody | null = null;
+    try { body = JSON.parse(text); } catch { /* not json */ }
+    throw enrichError(new Error(`API ${res.status}: ${text || res.statusText}`), body);
   }
   if (res.headers.get("content-type")?.includes("application/json")) {
     return res.json();
@@ -188,7 +210,9 @@ export async function downloadFile(
   );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${text || res.statusText}`);
+    let body: ApiErrorBody | null = null;
+    try { body = JSON.parse(text); } catch { /* not json */ }
+    throw enrichError(new Error(`API ${res.status}: ${text || res.statusText}`), body);
   }
   return res.blob();
 }
@@ -271,12 +295,27 @@ export async function completeTask(
   });
 }
 
-export async function getProviders(): Promise<unknown> {
+// ── Providers ─────────────────────────────────────────────
+
+export type Provider = "openrouter" | "nvidia";
+
+export interface ProviderInfo {
+  label: string;
+  model: string;
+  configured: boolean;
+}
+
+export interface ProvidersResponse {
+  providers: Record<Provider, ProviderInfo>;
+  activeProvider: Provider;
+}
+
+export async function getProviders(): Promise<ProvidersResponse> {
   return request("/api/provider");
 }
 
 export async function setProvider(
-  provider: "openrouter" | "nvidia"
+  provider: Provider
 ): Promise<void> {
   return request("/api/provider", {
     method: "POST",
@@ -285,29 +324,53 @@ export async function setProvider(
   });
 }
 
+export async function setProviderKey(
+  provider: Provider,
+  apiKey: string
+): Promise<void> {
+  return request("/api/provider/keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, apiKey }),
+  });
+}
+
 export async function healthCheck(): Promise<unknown> {
   return request("/health");
 }
 
-export async function checkApiStatus(): Promise<{
+// ── Status ────────────────────────────────────────────────
+
+export interface ApiStatus {
   ok: boolean;
   configured: boolean;
   provider: string;
   model: string;
-}> {
+  providerId: Provider;
+  availableProviders: Record<Provider, ProviderInfo>;
+  openrouterConfigured: boolean;
+  nvidiaConfigured: boolean;
+}
+
+export async function checkApiStatus(): Promise<ApiStatus> {
   return request("/api/status");
 }
 
+// ── Setup ─────────────────────────────────────────────────
+
 export async function saveSetup(
   apiKey: string,
-  model?: string
+  model?: string,
+  provider?: Provider
 ): Promise<{ ok: boolean; configured: boolean }> {
   return request("/api/setup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ apiKey, model }),
+    body: JSON.stringify({ apiKey, model, provider }),
   });
 }
+
+// ── Models ────────────────────────────────────────────────
 
 export interface ModelInfo {
   id: string;
@@ -316,19 +379,19 @@ export interface ModelInfo {
 }
 
 export async function fetchModels(
-  apiKey: string
+  provider?: Provider
 ): Promise<{ models: ModelInfo[] }> {
-  return request(
-    `/api/models?apiKey=${encodeURIComponent(apiKey)}`
-  );
+  const params = provider ? `?provider=${encodeURIComponent(provider)}` : "";
+  return request(`/api/models${params}`);
 }
 
 export async function updateModel(
-  model: string
+  model: string,
+  provider?: Provider
 ): Promise<{ ok: boolean; model: string }> {
   return request("/api/model", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model }),
+    body: JSON.stringify({ model, provider }),
   });
 }

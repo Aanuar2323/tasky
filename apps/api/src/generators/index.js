@@ -2,12 +2,14 @@ import { generateXlsx, readXlsxStructure, editXlsx } from './xlsx.js';
 import { generateDocx, readDocxStructure, editDocx } from './docx.js';
 import { generatePptx, readPptxStructure, editPptx } from './pptx.js';
 import { generatePng, editPng } from './png.js';
+import { generatePdf, readPdfStructure, editPdf } from './pdf.js';
 
 const GENERATORS = {
   xlsx: { generate: generateXlsx, readStructure: readXlsxStructure, edit: editXlsx },
   docx: { generate: generateDocx, readStructure: readDocxStructure, edit: editDocx },
   pptx: { generate: generatePptx, readStructure: readPptxStructure, edit: editPptx },
   png: { generate: generatePng, readStructure: null, edit: editPng },
+  pdf: { generate: generatePdf, readStructure: readPdfStructure, edit: editPdf },
 };
 
 export function detectFileType(filename) {
@@ -40,6 +42,7 @@ export async function editFile({ type, inputPath, outputDir, changes, filename }
   if (type === 'docx') return gen.edit({ outputDir, data: changes, filename });
   if (type === 'pptx') return gen.edit({ outputDir, data: changes, filename });
   if (type === 'png') return gen.edit({ inputPath, outputDir, changes, filename });
+  if (type === 'pdf') return gen.edit({ outputDir, data: changes, filename });
 
   throw new Error(`Edit handler missing for type: ${type}`);
 }

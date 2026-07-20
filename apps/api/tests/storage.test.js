@@ -121,13 +121,13 @@ describe('storage.js', async () => {
     it('creates per-area summaries and rules', async () => {
       for (const areaId of ['a1', 'a2', 'a3']) {
         const summary = await fs.readFile(
-          path.join(projRoot, 'ai', 'layer2', 'areas', areaId, 'summary.md'),
+          path.join(projRoot, 'ai', 'layer2', 'areas', areaId, storage.AREA_SUMMARY_FILE),
           'utf8'
         );
         assert.ok(summary.includes('Capa 2'));
         assert.ok(summary.includes('Resumen del área'));
         const rules = await fs.readFile(
-          path.join(projRoot, 'ai', 'layer2', 'areas', areaId, 'rules.md'),
+          path.join(projRoot, 'ai', 'layer2', 'areas', areaId, storage.AREA_RULES_FILE),
           'utf8'
         );
         assert.ok(rules.includes('Reglas del área'));

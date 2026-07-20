@@ -37,9 +37,20 @@ import {
   projectRoot,
   getStorageRoot,
   safeJoin,
+  AREA_RULES_FILE,
+  AREA_SUMMARY_FILE,
 } from './storage.js';
 
-import { nvidiaChat, getAvailableProviders, setProvider, getActiveConfig, updateApiConfig, isConfigured } from './llm-client.js';
+import {
+  nvidiaChat,
+  getAvailableProviders,
+  setProvider,
+  getActiveConfig,
+  getActiveProvider,
+  updateApiConfig,
+  getModelsForProvider,
+  isConfigured,
+} from './llm-client.js';
 
 import { generateFile, readFileStructure, editFile, detectFileType } from './generators/index.js';
 
@@ -86,9 +97,23 @@ const app = express();
 // 1. Cabeceras de Seguridad HTTP (Protección contra XSS, Clickjacking, etc.)
 app.use(helmet());
 
-// 2. Configuración CORS Restringida (Ideal para producción, cambiar '*' por tu dominio)
+// 2. Configuración CORS Restringida.
+//    - Si CORS_ORIGIN está definida, se usa (un origen o lista separada por comas).
+//    - Si NODE_ENV === 'production' sin CORS_ORIGIN, fallback a 'https://midominio.com'.
+//    - En desarrollo o sin variables, se permite '*'.
+function resolveCorsOrigin() {
+  if (process.env.CORS_ORIGIN && process.env.CORS_ORIGIN.trim() !== '') {
+    const raw = process.env.CORS_ORIGIN.trim();
+    const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    return parts.length === 1 ? parts[0] : parts;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return 'https://midominio.com';
+  }
+  return '*';
+}
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' ? 'https://midominio.com' : '*',
+  origin: resolveCorsOrigin(),
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -213,6 +238,59 @@ async function readOptional(root, relPath) {
 }
 
 /**
+ * Extrae texto plano de un buffer DOCX usando mammoth.
+ * Devuelve el markdown resultante (mammoth.convertToMarkdown).
+ * Si falla, devuelve string vacío sin throw.
+ * @param {Buffer} buf
+ * @returns {Promise<string>}
+ */
+async function extractDocxText(buf) {
+  try {
+    const mammoth = await import('mammoth');
+    const { value } = await mammoth.default.extractRawText({ buffer: buf });
+    return (value ?? '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  } catch (e) {
+    console.warn(`[docx] extract failed: ${e?.message ?? e}`);
+    return '';
+  }
+}
+
+/**
+ * Lee un archivo de contexto del proyecto y devuelve texto plano extraído.
+ * Soporta .md/.txt/.json/.csv (utf-8 directo), .pdf (extractPdfText), .docx (mammoth).
+ * Para otros formatos devuelve string vacío.
+ * @param {string} root
+ * @param {string} relPath
+ * @returns {Promise<string>}
+ */
+async function readContextFile(root, relPath) {
+  const abs = safeJoin(root, relPath);
+  const lower = relPath.toLowerCase();
+  try {
+    if (lower.endsWith('.pdf')) {
+      const buf = await fs.readFile(abs);
+      const { text } = await extractPdfText(buf);
+      return text;
+    }
+    if (lower.endsWith('.docx')) {
+      const buf = await fs.readFile(abs);
+      return await extractDocxText(buf);
+    }
+    if (/\.(md|markdown|txt|json|jsonl|csv|tsv|xml|yaml|yml|html|css|js|ts|jsx|tsx|py|java|go|rs|c|cpp|h|hpp|sh|bash|sql|ini|toml|env|log)$/i.test(lower)) {
+      return await fs.readFile(abs, 'utf8');
+    }
+    return '';
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
+ * Extensiones soportadas como archivos de contexto para la IA.
+ */
+const CONTEXT_EXTS = /\.(md|markdown|txt|json|jsonl|csv|tsv|xml|yaml|yml|pdf|docx|html|css|js|ts|jsx|tsx|py|java|go|rs|c|cpp|h|hpp|sh|bash|sql|ini|toml|env|log)$/i;
+
+/**
  * Lista archivos .md en un directorio (ruta relativa dentro del proyecto).
  */
 async function listMarkdownFiles(root, relDir) {
@@ -220,14 +298,66 @@ async function listMarkdownFiles(root, relDir) {
     const abs = safeJoin(root, relDir);
     const entries = await fs.readdir(abs, { withFileTypes: true });
     return entries
-      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.md') && e.name !== 'summary.md')
+      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.md') && e.name !== AREA_SUMMARY_FILE)
       .map((e) => path.posix.join(relDir.split(path.sep).join(path.posix.sep), e.name));
   } catch {
     return [];
   }
 }
 
-function pickRelevantFiles(recentMessages, files, max = 3) {
+/**
+ * Lista todos los archivos de contexto soportados (.md/.txt/.json/.csv/.pdf/.docx/etc)
+ * dentro de un directorio (un nivel). Excluye summary.md.
+ */
+async function listContextFiles(root, relDir) {
+  try {
+    const abs = safeJoin(root, relDir);
+    const entries = await fs.readdir(abs, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isFile() && e.name !== AREA_SUMMARY_FILE && CONTEXT_EXTS.test(e.name))
+      .map((e) => path.posix.join(relDir.split(path.sep).join(path.posix.sep), e.name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ *  Lista unionada de archivos de contexto para IA:
+ *  area (recursive 1 level) + info/*.*  + root *.* .
+ *  Area files primero (mayor relevancia), info/ después, root al final.
+ *  Excluye summary.md (siempre se carga por separado).
+ */
+async function listAllContextFiles(root, areaId) {
+  const areaDir = `ai/layer2/areas/${areaId}`;
+  const areaFiles = await listContextFiles(root, areaDir);
+
+  const areaSubdirs = [];
+  try {
+    const absArea = safeJoin(root, areaDir);
+    const entries = await fs.readdir(absArea, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        const subFiles = await listContextFiles(root, `${areaDir}/${e.name}`);
+        for (const sf of subFiles) areaSubdirs.push(sf);
+      }
+    }
+  } catch {}
+
+  const infoFiles = await listContextFiles(root, 'info');
+  const rootFiles = await listContextFiles(root, '');
+
+  const seen = new Set(areaFiles);
+  const merged = [...areaFiles];
+  for (const f of [...areaSubdirs, ...infoFiles, ...rootFiles]) {
+    if (!seen.has(f)) {
+      seen.add(f);
+      merged.push(f);
+    }
+  }
+  return merged;
+}
+
+async function pickRelevantFiles(recentMessages, files, max = 5, root) {
   // Combine text from multiple recent messages for broader context
   const combined = (Array.isArray(recentMessages) ? recentMessages : [recentMessages])
     .filter(Boolean)
@@ -246,20 +376,37 @@ function pickRelevantFiles(recentMessages, files, max = 3) {
 
   if (words.length === 0) return files.slice(0, max);
 
+  // Pre-load first ~500 chars of each file content for content-based scoring
+  const snippets = await Promise.all(
+    files.map(async (rel) => {
+      if (!root) return '';
+      try {
+        const content = await readContextFile(root, rel);
+        return content.slice(0, 500).toLowerCase();
+      } catch {
+        return '';
+      }
+    })
+  );
+
   const scored = files
-    .map((f) => {
+    .map((f, i) => {
       const name = f.toLowerCase();
-      // Unigram scoring
+      const snippet = snippets[i];
+      // Filename-only score
       let score = words.reduce((acc, t) => (name.includes(t) ? acc + 1 : acc), 0);
-      // Bigram scoring (bonus for phrase matches)
       score += bigrams.reduce((acc, b) => (name.includes(b) ? acc + 3 : acc), 0);
+      // Content boost: query words appearing in first 500 chars
+      if (snippet) {
+        score += words.reduce((acc, t) => (snippet.includes(t) ? acc + 1 : acc), 0);
+        score += bigrams.reduce((acc, b) => (snippet.includes(b) ? acc + 2 : acc), 0);
+      }
       return { f, score };
     })
-    .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .map((x) => x.f);
 
-  return (scored.length ? scored : files).slice(0, max);
+  return scored.slice(0, max);
 }
 
 async function loadAreasConfig(root) {
@@ -340,58 +487,68 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 
 /**
  * GET /api/provider
- * Obtiene los proveedores de IA disponibles y sus modelos.
- * Retorna: { providers: Record<string, { label: string, model: string }> }
+ * Obtiene los proveedores de IA disponibles y el activo.
+ * Retorna: { providers: Record<string, {label,model,configured}>, activeProvider: string }
  */
 app.get('/api/provider', (_req, res) => {
-  res.json({ providers: getAvailableProviders() });
+  res.json({
+    providers: getAvailableProviders(),
+    activeProvider: getActiveProvider(),
+  });
 });
 
 /**
  * POST /api/provider
- * Cambia el proveedor de IA activo.
+ * Cambia el proveedor de IA activo y persiste la preferencia.
  * Body: { provider: 'openrouter' | 'nvidia' }
- * Retorna: { ok: true }
  */
 app.post('/api/provider', (req, res) => {
   const schema = z.object({ provider: z.enum(['openrouter', 'nvidia']) });
   const body = schema.parse(req.body ?? {});
-  setProvider(body.provider);
+  const ok = setProvider(body.provider);
+  if (!ok) {
+    return res.status(400).json({ error: `Provider ${body.provider} no configurado` });
+  }
   res.json({ ok: true });
 });
 
-// ── Modelos de OpenRouter ─────────────────────────────────
+/**
+ * POST /api/provider/keys
+ * Configura la API key de un proveedor sin cambiar el provider activo.
+ * Body: { provider: 'openrouter' | 'nvidia', apiKey: string }
+ */
+app.post('/api/provider/keys', async (req, res) => {
+  const schema = z.object({
+    provider: z.enum(['openrouter', 'nvidia']),
+    apiKey: z.string().min(1, 'API key requerida'),
+  });
+  const body = schema.parse(req.body ?? {});
+  try {
+    await updateApiConfig({ apiKey: body.apiKey, provider: body.provider });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: `Error guardando clave: ${e?.message || String(e)}` });
+  }
+});
+
+// ── Modelos ─────────────────────────────────────────────────
 
 /**
- * GET /api/models?apiKey=<key>
- * Obtiene todos los modelos disponibles desde OpenRouter.
- * Ordena: gratis primero, luego alfabético.
+ * GET /api/models?provider=openrouter|nvidia
+ * Obtiene los modelos disponibles desde OpenRouter o NVIDIA NIM.
+ * Si no se especifica provider, usa el activo.
+ * Ordena: gratis primero (solo OpenRouter), luego alfabético.
  */
 app.get('/api/models', async (req, res) => {
-  const apiKey = String(req.query.apiKey || '') || getActiveConfig().API_KEY;
-  if (!apiKey) {
-    return res.status(400).json({ error: 'API key requerida' });
+  const provider = req.query.provider || getActiveProvider();
+  if (!provider || !['openrouter', 'nvidia'].includes(provider)) {
+    return res.status(400).json({ error: 'Provider inválido o no especificado. Usa ?provider=openrouter|nvidia' });
   }
   try {
-    const response = await fetch('https://openrouter.ai/api/v1/models', {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!response.ok) {
-      return res.status(502).json({ error: 'Error al obtener modelos de OpenRouter' });
-    }
-    const data = await response.json();
-    const models = (data.data || []).map(m => ({
-      id: m.id,
-      name: m.name,
-      isFree: m.id.endsWith(':free') || (Number(m.pricing?.prompt) === 0 && Number(m.pricing?.completion) === 0),
-    }));
-    models.sort((a, b) => {
-      if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
-      return a.id.localeCompare(b.id);
-    });
+    const { models } = await getModelsForProvider(provider);
     res.json({ models });
   } catch (e) {
-    res.status(502).json({ error: `Error al conectar con OpenRouter: ${e?.message || String(e)}` });
+    res.status(e.status || 502).json({ error: e.message || `Error al obtener modelos` });
   }
 });
 
@@ -402,27 +559,33 @@ app.get('/api/models', async (req, res) => {
  * Indica si el servidor está funcionando y si la IA está configurada.
  */
 app.get('/api/status', (_req, res) => {
+  const providers = getAvailableProviders();
   res.json({
     ok: true,
     configured: isConfigured(),
     provider: getActiveConfig().LABEL,
     model: getActiveConfig().MODEL,
+    providerId: getActiveProvider(),
+    availableProviders: providers,
+    openrouterConfigured: providers.openrouter?.configured ?? false,
+    nvidiaConfigured: providers.nvidia?.configured ?? false,
   });
 });
 
 /**
  * POST /api/setup
- * Guarda la API key de OpenRouter y el modelo desde el frontend.
- * Body: { apiKey: string, model?: string }
+ * Guarda API key, modelo y provider desde el frontend.
+ * Body: { apiKey: string, model?: string, provider?: 'openrouter'|'nvidia' }
  */
 app.post('/api/setup', async (req, res) => {
   const schema = z.object({
     apiKey: z.string().min(10, 'API key demasiado corta'),
     model: z.string().optional(),
+    provider: z.enum(['openrouter', 'nvidia']).optional(),
   });
   const body = schema.parse(req.body ?? {});
   try {
-    await updateApiConfig({ apiKey: body.apiKey, model: body.model });
+    await updateApiConfig({ apiKey: body.apiKey, model: body.model, provider: body.provider });
     res.json({ ok: true, configured: true });
   } catch (e) {
     res.status(500).json({ error: `Error guardando config: ${e?.message || String(e)}` });
@@ -432,15 +595,16 @@ app.post('/api/setup', async (req, res) => {
 /**
  * PATCH /api/model
  * Actualiza solo el modelo activo (sin cambiar API key).
- * Body: { model: string }
+ * Body: { model: string, provider?: 'openrouter'|'nvidia' }
  */
 app.patch('/api/model', async (req, res) => {
   const schema = z.object({
     model: z.string().min(1, 'Modelo requerido'),
+    provider: z.enum(['openrouter', 'nvidia']).optional(),
   });
   const body = schema.parse(req.body ?? {});
   try {
-    await updateApiConfig({ model: body.model });
+    await updateApiConfig({ model: body.model, provider: body.provider });
     res.json({ ok: true, model: body.model });
   } catch (e) {
     res.status(500).json({ error: `Error actualizando modelo: ${e?.message || String(e)}` });
@@ -715,7 +879,7 @@ app.get('/api/projects/:id/download', async (req, res) => {
 app.post('/api/projects/:id/generate', async (req, res) => {
   const projectId = req.params.id;
   const schema = z.object({
-    type: z.enum(['xlsx', 'docx', 'pptx', 'png']),
+    type: z.enum(['xlsx', 'docx', 'pptx', 'png', 'pdf']),
     data: z.any().optional(),
     filename: z.string().min(1).max(120).optional(),
     areaId: z.string().min(1),
@@ -928,7 +1092,7 @@ app.get('/api/projects/:id/rules', async (req, res) => {
     }
   }
 
-  const relPath = areaId ? `ai/layer2/areas/${areaId}/rules.md` : 'rules.md';
+  const relPath = areaId ? `ai/layer2/areas/${areaId}/${AREA_RULES_FILE}` : 'rules.md';
   const content = await readOptional(root, relPath);
   res.json({ content });
 });
@@ -955,7 +1119,7 @@ app.put('/api/projects/:id/rules', async (req, res) => {
     }
   }
 
-  const relPath = body.areaId ? `ai/layer2/areas/${body.areaId}/rules.md` : 'rules.md';
+  const relPath = body.areaId ? `ai/layer2/areas/${body.areaId}/${AREA_RULES_FILE}` : 'rules.md';
   await writeTextFile(root, relPath, body.markdown);
   res.json({ ok: true });
 });
@@ -1120,7 +1284,7 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
   const activeTask = body.activeTaskPath;
   const areaId = body.areaId;
   const chatId = body.chatId;
-  const rules = await readOptional(root, `ai/layer2/areas/${areaId}/rules.md`);
+  const rules = (await readOptional(root, `ai/layer2/areas/${areaId}/${AREA_RULES_FILE}`)) || (await readOptional(root, 'rules.md'));
   const chatLogRel = `chat/areas/${areaId}/${chatId}.jsonl`;
 
   // Guardar el último mensaje del usuario en el historial persistente (.jsonl)
@@ -1137,16 +1301,19 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
 
   const layer1 = await readOptional(root, 'ai/layer1/00-role-and-flow.md');
   const layer2Summary = await readOptional(root, 'ai/layer2/summary.md');
-  const areaSummary = await readOptional(root, `ai/layer2/areas/${areaId}/summary.md`);
+  const areaSummary = await readOptional(root, `ai/layer2/areas/${areaId}/${AREA_SUMMARY_FILE}`);
   const layer3 = await readOptional(root, 'ai/layer3/qa.md');
-  const areaFiles = await listMarkdownFiles(root, `ai/layer2/areas/${areaId}`);
+  const areaFiles = await listAllContextFiles(root, areaId);
   // Use last 3 user messages for better file relevance matching
   const recentUserMessages = [...body.messages].reverse().filter((m) => m.role === 'user').slice(0, 3).map((m) => m.content);
-  const selectedFiles = pickRelevantFiles(recentUserMessages, areaFiles, 3);
+  const selectedFiles = await pickRelevantFiles(recentUserMessages, areaFiles, 5, root);
   const selectedBlocks = await Promise.all(
     selectedFiles.map(async (rel) => {
-      const content = await readOptional(root, rel);
-      const clipped = content.slice(0, 4000);
+      const raw = await readContextFile(root, rel);
+      const clipped = (raw || '').slice(0, 12000);
+      if (!clipped) {
+        return `---\nFILE: ${rel}\n(binario o sin texto extraíble; ver nombre arriba)\n`;
+      }
       return `---\nFILE: ${rel}\n${clipped}\n`;
     })
   );
@@ -1178,8 +1345,8 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
       `LAYER 1 (role + execution order):\n${layer1}\n\n` +
       `LAYER 2 (global summary):\n${layer2Summary}\n\n` +
       `LAYER 2 (area summary - ${areaId}):\n${areaSummary}\n\n` +
-      `LAYER 2 (area files list):\n${areaFilesList}\n\n` +
-      `LAYER 2 (selected files):\n${selectedText}\n\n` +
+      `LAYER 2 (area files list — all available context files):\n${areaFilesList}\n\n` +
+      `LAYER 2 (selected files — you MUST search these first before asking):\n${selectedText}\n\n` +
       `RULES (markdown):\n${rules}\n\n` +
       historyBlock +
       (activeTask
@@ -1200,10 +1367,11 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
       `- "meta.complete" should be true only if the user's request is fully solved.\n` +
       `- "meta.taskPath" should be the active task path if you are marking it complete, else null.\n` +
       `- "meta.summary" is a one-line summary of your response.\n` +
-      `- "fileGenerated" is OPTIONAL. Include it only when the user asks to create or edit a file (Excel/Word/PowerPoint/Image). Same structure as before.\n\n` +
+      `- "fileGenerated" is OPTIONAL. Include it only when the user asks to create or edit a file (Excel/Word/PowerPoint/PDF/Image). Same structure as before.\n\n` +
       `FILE GENERATION (only when user requests a file):\n` +
       `For XLSX: { "type":"xlsx", "data": { "sheets":[{"name":string,"columns":[{"header":string,"key":string,"width"?:number}],"rows":[{"key":value}],"styles"?:{"headerBold":bool,"headerBgColor":string,"headerFontColor":string}}] }, "filename": "..." }\n` +
       `For DOCX: { "type":"docx", "data": { "title"?:string,"sections":[{"type":"heading|paragraph|bullet|table|image","text"?:string,"level"?:1|2|3,"bold"?:bool,"italic"?:bool,"fontSize"?:number,"alignment"?:string,"rows"?:string[][],"imagePath"?:string,"imageWidth"?:number,"imageHeight"?:number}] }, "filename": "..." }\n` +
+      `For PDF: { "type":"pdf", "data": { "title"?:string,"sections":[{"type":"heading|paragraph|bullet|table|image","text"?:string,"level"?:1|2|3,"bold"?:bool,"fontSize"?:number,"alignment"?:string,"rows"?:string[][],"imagePath"?:string,"imageWidth"?:number,"imageHeight"?:number}] }, "filename": "..." }\n` +
       `For PPTX: { "type":"pptx", "data": { "title"?:string,"slides":[{"type":"title|content|bullets|table|image","title"?:string,"subtitle"?:string,"body"?:string,"bullets"?:string[],"rows"?:string[][],"imagePath"?:string,"notes"?:string}] }, "filename": "..." }\n` +
       `For PNG chart: { "type":"png", "data": { "type":"chart","chartType":"bar|line|pie|doughnut","title":string,"labels":string[],"datasets":[{"label":string,"data":number[],"color"?:string}],"width"?:number,"height"?:number }, "filename": "..." }\n` +
       `For PNG table: { "type":"png", "data": { "type":"table","title"?:string,"headers":string[],"rows":string[][],"width"?:number,"height"?:number }, "filename": "..." }\n` +
@@ -1309,6 +1477,41 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
       kind === 'network' ? 504 :
       502;
 
+    const upstreamCodes = [];
+    if (httpStatus) upstreamCodes.push(httpStatus);
+    if (status && status !== httpStatus) upstreamCodes.push(status);
+
+    const ERROR_LABELS = {
+      unauthorized:       { title: 'API key inválida',                    hint: 'Revisá que la clave esté bien pegada en Configuración.' },
+      payment_required:   { title: 'Sin créditos en OpenRouter',         hint: 'Subí a cuenta paga o reducí los max_tokens de la solicitud.' },
+      forbidden:          { title: 'Acceso denegado',                     hint: 'El proveedor rechazó la solicitud. Verificá los permisos.' },
+      rate_limited:       { title: 'Límite de peticiones',                hint: 'Demasiadas solicitudes seguidas. Esperá unos segundos.' },
+      payload_too_large:  { title: 'Solicitud muy grande',               hint: 'El mensaje supera el tamaño permitido. Reducilo.' },
+      unavailable:        { title: 'Servicio saturado',                   hint: 'El proveedor está al máximo. Probá otro modelo.' },
+      server_error:       { title: 'Servidor caído',                      hint: 'El servidor de inferencia falló temporalmente.' },
+      bad_gateway:        { title: 'Pasarela caída',                      hint: 'Error intermitente del provider. Reintentá.' },
+      network:            { title: 'Sin conexión',                        hint: 'No se pudo contactar con el proveedor. Verificá tu internet.' },
+      unknown:            { title: 'Error inesperado',                    hint: 'Algo salió mal. Reintentá o cambiá de modelo.' },
+    };
+    const label = ERROR_LABELS[kind] ?? ERROR_LABELS.unknown;
+    const errorHuman = {
+      title: label.title,
+      hint: kind === 'unknown' && status === 404 ? 'El ID de modelo no existe en el endpoint. Verificalo.' : label.hint,
+      codes: upstreamCodes,
+      retriable,
+    };
+
+    try {
+      await appendJsonl(path.join(root, chatLogRel), {
+        role: 'assistant',
+        content: '',
+        error: errorHuman,
+        ts: Date.now(),
+      });
+    } catch (logErr) {
+      console.warn('[CHAT] Failed to persist error to jsonl:', logErr?.message);
+    }
+
     res.status(httpStatus).json({
       error: chatErr?.message ?? 'Error comunicándose con la IA',
       kind,
@@ -1317,6 +1520,7 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
       provider,
       generationId,
       upstreamStatus: status,
+      errorHuman,
     });
   }
 });
@@ -1372,4 +1576,4 @@ const server = app.listen(PORT, () => {
   console.log(`API listening on http://localhost:${PORT}`);
 });
 
-export { app, server };
+export { app, server, readContextFile, listAllContextFiles, CONTEXT_EXTS };

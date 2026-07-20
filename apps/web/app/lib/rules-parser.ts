@@ -28,7 +28,15 @@ export function parseRulesMarkdown(markdown: string): RuleItem[] {
       continue;
     }
     if (tagLine) {
-      current.tags.push(tagLine[1].trim());
+      const tag = tagLine[1].trim();
+      if (tag === "disabled") {
+        current.enabled = false;
+        continue;
+      }
+      if (tag === "enabled") {
+        continue;
+      }
+      current.tags.push(tag);
     }
   }
 
@@ -42,7 +50,10 @@ export function rulesToMarkdown(rules: RuleItem[]): string {
     .map((rule) => {
       const title = `### ${rule.name}`;
       const desc = rule.desc ? `- ${rule.desc}` : "- Sin descripcion";
-      const tags = rule.tags.map((tag) => `\`${tag}\``).join("\n");
+      const cleanTags = rule.tags.filter(
+        (t) => t !== "enabled" && t !== "disabled"
+      );
+      const tags = cleanTags.map((tag) => `\`${tag}\``).join("\n");
       const status = rule.enabled ? "`enabled`" : "`disabled`";
       return [title, desc, tags, status].filter(Boolean).join("\n");
     })

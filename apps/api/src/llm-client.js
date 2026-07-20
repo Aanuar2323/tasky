@@ -1,137 +1,257 @@
 /**
  * llm-client.js — Cliente LLM unificado (OpenRouter / NVIDIA NIM)
  *
- * Este módulo detecta automáticamente el proveedor de IA disponible
- * a partir de las variables de entorno y encapsula toda la comunicación
- * con el endpoint de chat completions (formato OpenAI-compatible).
+ * Encapsula toda la comunicación con el endpoint de chat completions
+ * (formato OpenAI-compatible) para ambos proveedores.
  *
- * Prioridad de detección:
- *   1. Si OPENROUTER_API_KEY existe → usa OpenRouter
- *   2. Si NVIDIA_API_KEY existe    → usa NVIDIA NIM
+ * Detección inicial (al cargar el módulo):
+ *   1. Si hay API key de OpenRouter (env o user-config) → disponible
+ *   2. Si hay API key de NVIDIA    (env o user-config) → disponible
+ *   3. Provider activo = getProvider() de user-config, o 'openrouter' por defecto
  *
  * Variables de entorno:
- *   MODEL               — Nombre del modelo a usar
- *   OPENROUTER_BASE_URL — URL base de OpenRouter (default: https://openrouter.ai/api/v1)
- *   OPENROUTER_API_KEY  — Clave de autenticación de OpenRouter
- *   NVIDIA_BASE_URL     — URL base de NVIDIA NIM (default: https://integrate.api.nvidia.com/v1)
- *   NVIDIA_API_KEY      — Clave de autenticación de NVIDIA
+ *   MODEL               — Modelo por defecto
+ *   OPENROUTER_BASE_URL — URL base OpenRouter (default: https://openrouter.ai/api/v1)
+ *   OPENROUTER_API_KEY  — Clave OpenRouter (env, fallback a user-config)
+ *   NVIDIA_BASE_URL     — URL base NVIDIA NIM (default: https://integrate.api.nvidia.com/v1)
+ *   NVIDIA_API_KEY      — Clave NVIDIA NIM  (env, fallback a user-config)
  *   APP_URL             — URL de la app para attribution en OpenRouter (opcional)
  */
 
 import 'dotenv/config';
-import { getApiKey, getModel, saveUserConfig } from './config.js';
+import {
+  getApiKey,
+  getNvidiaApiKey,
+  getModel,
+  getProvider,
+  saveUserConfig,
+} from './config.js';
 
 /* ==========================================================
-   Detección automática del proveedor
+   Utilidades
    ========================================================== */
 
 function isRealKey(key) {
   return key && !/your_.*_key_here/i.test(key);
 }
 
+/* ==========================================================
+   Configuración de proveedores
+   ========================================================== */
+
+const DEFAULT_MODELS = {
+  openrouter: 'openai/gpt-oss-120b:free',
+  nvidia: 'meta/llama-3.1-405b-instruct',
+};
+
 const envOpenRouterKey = isRealKey(process.env.OPENROUTER_API_KEY) ? process.env.OPENROUTER_API_KEY : null;
 const envNvidiaKey = isRealKey(process.env.NVIDIA_API_KEY) ? process.env.NVIDIA_API_KEY : null;
 
-let PROVIDER = envOpenRouterKey ? 'openrouter' : envNvidiaKey ? 'nvidia' : 'none';
-
-// Fallback a config de usuario si no hay env vars reales
-const USER_API_KEY = PROVIDER === 'none' ? getApiKey() : null;
-const USER_MODEL = PROVIDER === 'none' ? getModel() : null;
-
-if (USER_API_KEY) {
-  PROVIDER = 'openrouter';
-}
+const userOpenRouterKey = getApiKey();
+const userNvidiaKey = getNvidiaApiKey();
+const userModel = getModel();
+const userProviderPref = getProvider();
 
 const CONFIG = {
   openrouter: {
     baseUrl: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
-    apiKey: USER_API_KEY || envOpenRouterKey,
-    model: USER_MODEL ?? process.env.MODEL ?? 'openai/gpt-oss-120b:free',
+    apiKey: userOpenRouterKey || envOpenRouterKey || null,
+    model: userModel ?? process.env.MODEL ?? DEFAULT_MODELS.openrouter,
     label: 'OpenRouter',
   },
   nvidia: {
     baseUrl: process.env.NVIDIA_BASE_URL ?? 'https://integrate.api.nvidia.com/v1',
-    apiKey: envNvidiaKey,
-    model: process.env.MODEL ?? 'z-ai/glm-5.1',
+    apiKey: userNvidiaKey || envNvidiaKey || null,
+    model: userModel ?? process.env.MODEL ?? DEFAULT_MODELS.nvidia,
     label: 'NVIDIA NIM',
-  },
-  none: {
-    baseUrl: '',
-    apiKey: '',
-    model: '',
-    label: 'Sin proveedor',
   },
 };
 
-export function getActiveConfig() {
-  const active = CONFIG[PROVIDER];
-  return {
-    BASE_URL: active.baseUrl,
-    API_KEY: active.apiKey,
-    MODEL: active.model,
-    LABEL: active.label,
-  };
-}
+let PROVIDER =
+  (userProviderPref === 'nvidia' && CONFIG.nvidia.apiKey) ? 'nvidia'
+  : (userProviderPref === 'openrouter' && CONFIG.openrouter.apiKey) ? 'openrouter'
+  : CONFIG.openrouter.apiKey ? 'openrouter'
+  : CONFIG.nvidia.apiKey ? 'nvidia'
+  : 'none';
 
 // Configuración activa — actualizable dinámicamente
-let BASE_URL = getActiveConfig().BASE_URL;
-let API_KEY = getActiveConfig().API_KEY;
-let MODEL = getActiveConfig().MODEL;
-let LABEL = getActiveConfig().LABEL;
+let BASE_URL = CONFIG[PROVIDER]?.baseUrl ?? '';
+let API_KEY = CONFIG[PROVIDER]?.apiKey ?? '';
+let MODEL = CONFIG[PROVIDER]?.model ?? '';
+let LABEL = CONFIG[PROVIDER]?.label ?? 'Sin proveedor';
 
 function syncExports() {
-  const c = getActiveConfig();
-  BASE_URL = c.BASE_URL;
-  API_KEY = c.API_KEY;
-  MODEL = c.MODEL;
-  LABEL = c.LABEL;
+  const active = CONFIG[PROVIDER] ?? {};
+  BASE_URL = active.baseUrl ?? '';
+  API_KEY = active.apiKey ?? '';
+  MODEL = active.model ?? '';
+  LABEL = active.label ?? 'Sin proveedor';
+}
+
+export function getActiveConfig() {
+  return {
+    BASE_URL,
+    API_KEY,
+    MODEL,
+    LABEL,
+    PROVIDER,
+  };
 }
 
 export { BASE_URL, API_KEY, MODEL, LABEL };
 
-// Exportar función para cambiar el proveedor desde el frontend
+/* ==========================================================
+   Cambio de proveedor / modelo / API keys
+   ========================================================== */
+
+/**
+ * Cambia el proveedor activo y lo persiste en user-config.
+ * Si el provider no tiene API key configurada, no cambia.
+ * @param {'openrouter'|'nvidia'} provider
+ * @returns {boolean} true si cambió, false si no disponible
+ */
 export const setProvider = (provider) => {
-  if (provider in CONFIG) {
-    PROVIDER = provider;
-    const active = CONFIG[PROVIDER];
-    console.log(`[LLM] Proveedor actualizado: ${active.label} (${active.model})`);
-    syncExports();
-  }
+  if (!(provider in CONFIG) || provider === 'none') return false;
+  if (!CONFIG[provider].apiKey) return false;
+  PROVIDER = provider;
+  syncExports();
+  // Persistir preferencia (best-effort, sin bloquear el event loop en calls HTTP)
+  saveUserConfig({ provider }).catch((e) => {
+    console.warn(`[LLM] No se pudo persistir provider=${provider}: ${e?.message ?? e}`);
+  });
+  console.log(`[LLM] Proveedor actualizado: ${LABEL} (${MODEL})`);
+  return true;
 };
 
-/** Actualiza API key y/o modelo. Soporta partial update (solo modelo). */
-export async function updateApiConfig({ apiKey, model }) {
-  if (apiKey) CONFIG.openrouter.apiKey = apiKey;
-  if (model) CONFIG.openrouter.model = model;
-  PROVIDER = 'openrouter';
-  await saveUserConfig({
-    openrouterApiKey: apiKey || getApiKey(),
-    model: model || CONFIG.openrouter.model,
-  });
-  syncExports();
-  console.log(`[LLM] Config actualizada: provider=openrouter model=${CONFIG.openrouter.model}`);
+/**
+ * Actualiza API key y/o modelo de un proveedor concreo.
+ * No fuerza cambio de provider activo (lo hace solo si era el provider recibido).
+ *
+ * @param {Object} opts
+ * @param {string} [opts.apiKey]    — nueva API key para el provider
+ * @param {string} [opts.model]      — nuevo modelo para el provider
+ * @param {'openrouter'|'nvidia'} [opts.provider] — provider a actualizar (default: activo)
+ */
+export async function updateApiConfig({ apiKey, model, provider } = {}) {
+  let target = provider ?? PROVIDER;
+  // Si el provider activo es 'none' pero recibimos apiKey, asumimos setup
+  // inicial del provider por defecto (openrouter), manteniendo retrocompat.
+  if (target === 'none' && apiKey) target = 'openrouter';
+  if (!(target in CONFIG) || target === 'none') {
+    throw new Error(`Provider inválido: ${target}`);
+  }
+
+  if (apiKey) CONFIG[target].apiKey = apiKey;
+  if (model) CONFIG[target].model = model;
+
+  // Persistir solo el campo correspondiente; saveUserConfig hace merge
+  const partial = {};
+  if (apiKey) partial[target === 'openrouter' ? 'openrouterApiKey' : 'nvidiaApiKey'] = apiKey;
+  if (model) partial.model = model;
+  // Si el provider activo era 'none', ahora pasa a ser el target configurado
+  if (PROVIDER === 'none' && CONFIG[target].apiKey) {
+    PROVIDER = target;
+    partial.provider = target;
+  }
+  await saveUserConfig(partial);
+
+  // Si el provider actualizado es el activo, sincroniza exports
+  if (target === PROVIDER) syncExports();
+
+  console.log(`[LLM] Config actualizada: provider=${target} model=${CONFIG[target].model}`);
 }
 
-// Log informativo al iniciar
-console.log(`[LLM] Proveedor: ${LABEL} | Modelo: ${MODEL} | Base URL: ${BASE_URL}`);
+/* ==========================================================
+   Estado y disponibilidad
+   ========================================================== */
 
-// Exportar configuración disponible para el frontend
 export function getAvailableProviders() {
-  const result = Object.entries(CONFIG).reduce((acc, [key, config]) => {
-    if (key !== 'none' && config.apiKey) {
-      acc[key] = { label: config.label, model: config.model };
-    }
-    return acc;
-  }, {});
-  if (PROVIDER !== 'none' && !Object.keys(result).length) {
-    result.openrouter = { label: 'OpenRouter', model: CONFIG.openrouter.model };
+  const result = {};
+  for (const [key, cfg] of Object.entries(CONFIG)) {
+    if (key === 'none') continue;
+    result[key] = {
+      label: cfg.label,
+      model: cfg.model,
+      configured: !!cfg.apiKey,
+    };
   }
   return result;
 }
 
-/** Devuelve si el proveedor está configurado y listo */
+/** Devuelve el provider activo actual. */
+export function getActiveProvider() {
+  return PROVIDER;
+}
+
+/** Devuelve si hay al menos un proveedor con API key válida. */
 export function isConfigured() {
   return PROVIDER !== 'none' && !!API_KEY && !/your_.*_key_here/i.test(API_KEY);
+}
+
+// Log informativo al iniciar
+console.log(
+  `[LLM] Proveedor: ${LABEL} | Modelo: ${MODEL} | Base URL: ${BASE_URL} | ` +
+  `OR=${CONFIG.openrouter.apiKey ? 'ok' : '-'} NIM=${CONFIG.nvidia.apiKey ? 'ok' : '-'}`
+);
+
+/* ==========================================================
+   Listado de modelos por proveedor
+   ========================================================== */
+
+/**
+ * Obtiene los modelos disponibles de un proveedor concreto.
+ *
+ * @param {'openrouter'|'nvidia'} provider
+ * @returns {Promise<{ models: Array<{id: string, name: string, isFree: boolean}> }>}
+ */
+export async function getModelsForProvider(provider) {
+  const cfg = CONFIG[provider];
+  if (!cfg || !cfg.apiKey) {
+    const err = new Error(`Provider ${provider} no configurado`);
+    err.kind = 'unauthorized';
+    throw err;
+  }
+
+  const headers = {
+    Authorization: `Bearer ${cfg.apiKey}`,
+  };
+  if (provider === 'openrouter') {
+    headers['HTTP-Referer'] = process.env.APP_URL ?? 'http://localhost:5173';
+    headers['X-OpenRouter-Title'] = 'Task App';
+  }
+
+  const res = await fetch(`${cfg.baseUrl}/models`, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err = new Error(`[${res.status}] ${text.slice(0, 400)}`);
+    err.status = res.status;
+    err.kind = classifyError(res.status, text);
+    throw err;
+  }
+
+  const data = await res.json();
+  const list = Array.isArray(data?.data) ? data.data : [];
+
+  const models = list.map((m) => ({
+    id: m.id,
+    name: m.name || m.id,
+    isFree:
+      provider === 'openrouter'
+        ? m.id.endsWith(':free') ||
+          (Number(m.pricing?.prompt) === 0 && Number(m.pricing?.completion) === 0)
+        : false, // NIM no tiene sufijo :free
+  }));
+
+  if (provider === 'openrouter') {
+    models.sort((a, b) => {
+      if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
+      return a.id.localeCompare(b.id);
+    });
+  } else {
+    models.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  return { models };
 }
 
 /* ==========================================================
@@ -140,12 +260,7 @@ export function isConfigured() {
 
 /**
  * Schema JSON estricto para todas las respuestas del LLM.
- * Garantiza que el backend reciba un JSON parseable con content no vacío
- * y meta estructurado, eliminando el parsing frágil de "TASK_APP_META:".
- *
- * Top-level: strict (additionalProperties: false).
- * fileGenerated: additionalProperties: true (el LLM necesita libertad
- * para describir sheets/sections/slides/etc. según el tipo de archivo).
+ * Elimina el parsing frágil de "TASK_APP_META:".
  */
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -168,7 +283,7 @@ const RESPONSE_SCHEMA = {
       type: 'object',
       description: 'Opcional. Si la IA debe generar/editar un archivo, incluye este objeto',
       properties: {
-        type: { type: 'string', enum: ['xlsx', 'docx', 'pptx', 'png'] },
+        type: { type: 'string', enum: ['xlsx', 'docx', 'pptx', 'png', 'pdf'] },
         data: { type: 'object', additionalProperties: true },
         filename: { type: 'string' },
         editPath: { type: 'string' },
@@ -200,13 +315,10 @@ function buildHeaders() {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${API_KEY}`,
   };
-
-  // Headers opcionales recomendados por OpenRouter para app attribution
   if (PROVIDER === 'openrouter') {
     headers['HTTP-Referer'] = process.env.APP_URL ?? 'http://localhost:5173';
     headers['X-OpenRouter-Title'] = 'Task App';
   }
-
   return headers;
 }
 
@@ -215,14 +327,10 @@ function buildHeaders() {
    ========================================================== */
 
 /**
- * Clasifica un error HTTP de OpenRouter en una categoría semántica
- * para que el frontend pueda mostrar mensajes contextuales.
- *
- * @param {number} status   — HTTP status
- * @param {string} bodyText — Cuerpo crudo de la respuesta
- * @returns {string} kind — 'unauthorized' | 'payment_required' | 'forbidden'
- *  | 'rate_limited' | 'payload_too_large' | 'bad_request' | 'timeout'
- *  | 'unprocessable' | 'bad_gateway' | 'unavailable' | 'server_error' | 'unknown'
+ * Clasifica un error HTTP en una categoría semántica.
+ * @param {number} status
+ * @param {string} bodyText
+ * @returns {string}
  */
 function classifyError(status, bodyText) {
   if (status === 401) return 'unauthorized';
@@ -234,30 +342,13 @@ function classifyError(status, bodyText) {
   if (status === 502) return 'bad_gateway';
   if (status === 503) return 'unavailable';
   if (status === 500 || status === 504) return 'server_error';
-
-  if (status === 429) {
-    const lower = (bodyText ?? '').toLowerCase();
-    if (
-      lower.includes('rate-limited') ||
-      lower.includes('ratelimit') ||
-      lower.includes('isratelimit') ||
-      lower.includes('temporarily rate-limited') ||
-      lower.includes('quota')
-    ) {
-      return 'rate_limited';
-    }
-    return 'rate_limited';
-  }
-
+  if (status === 429) return 'rate_limited';
   if (status === 400) return 'bad_request';
   return 'unknown';
 }
 
 /**
  * Lee metadata.provider_name del cuerpo JSON de error de OpenRouter.
- * OpenRouter envuelve el error en { error: { metadata: { provider_name } } },
- * pero también tolera el formato plano { metadata: { provider_name } }.
- *
  * @param {string} bodyText
  * @returns {string|null}
  */
@@ -265,9 +356,7 @@ function extractProvider(bodyText) {
   if (!bodyText) return null;
   try {
     const j = JSON.parse(bodyText);
-    return j?.error?.metadata?.provider_name
-      ?? j?.metadata?.provider_name
-      ?? null;
+    return j?.error?.metadata?.provider_name ?? j?.metadata?.provider_name ?? null;
   } catch {
     return null;
   }
@@ -275,8 +364,6 @@ function extractProvider(bodyText) {
 
 /**
  * Lee headers X-RateLimit-* de OpenRouter y los devuelve como objeto numérico.
- * @param {Headers} headers
- * @returns {{limit: number|null, remaining: number|null, reset: number|null}}
  */
 function readRateLimitHeaders(headers) {
   const num = (k) => {
@@ -298,14 +385,6 @@ function readRateLimitHeaders(headers) {
 
 /**
  * Realiza una petición POST a /chat/completions con los parámetros dados.
- * Enriquecido con:
- *  - Clasificación semántica del error (err.kind)
- *  - Telemetría: X-Generation-Id, usage, cost
- *  - Rate limit headers (X-RateLimit-*)
- *  - Indicador de retriabilidad (err.retriable)
- *
- * @param {Object} bodyParams — Parámetros del body (model, messages, etc.)
- * @returns {{data: Object, message: Object, usage: Object|null, cost: number|null, generationId: string|null}}
  */
 async function fetchCompletion(bodyParams) {
   const res = await fetch(`${BASE_URL}/chat/completions`, {
@@ -325,7 +404,8 @@ async function fetchCompletion(bodyParams) {
     err.status = res.status;
     err.body = text;
     err.kind = kind;
-    err.retriable = kind === 'rate_limited' || kind === 'unavailable' || kind === 'bad_gateway' || kind === 'server_error';
+    err.retriable =
+      kind === 'rate_limited' || kind === 'unavailable' || kind === 'bad_gateway' || kind === 'server_error';
     err.retryAfter = retryAfter ? Number(retryAfter) : null;
     err.generationId = generationId;
     err.rateLimit = rateLimit;
@@ -342,24 +422,66 @@ async function fetchCompletion(bodyParams) {
 }
 
 /**
- * Intenta enviar con tools. Si el modelo no los soporta (400),
- * reintenta automáticamente sin tools.
+ * Indica si el cuerpo de error menciona que response_format/json_schema no soportado.
  */
-async function fetchWithToolsFallback(baseParams, tools) {
-  const paramsWithTools = tools?.length
-    ? { ...baseParams, tools, tool_choice: 'auto' }
-    : baseParams;
+function isSchemaUnsupportedError(err) {
+  const body = (err?.body ?? '').toLowerCase();
+  return (
+    (err?.status === 400 || err?.status === 422) &&
+    (body.includes('response_format') ||
+      body.includes('json_schema') ||
+      body.includes('json mode') ||
+      body.includes('structured output'))
+  );
+}
+
+/**
+ * Indica si el error es porque el modelo no soporta tools/function calling.
+ */
+function isToolsUnsupportedError(err) {
+  const body = (err?.body ?? '').toLowerCase();
+  return (
+    err?.status === 400 &&
+    (body.includes('tool') || body.includes('function') || body.includes('not supported'))
+  );
+}
+
+/**
+ * Intenta enviar con tools + response_format.
+ * Reintentos automáticos:
+ *  1. Si tools no soportado → reintenta sin tools
+ *  2. Si response_format no soportado → reintenta sin response_format
+ * (manteniendo el resto de parámetros)
+ */
+async function fetchWithFallbacks(baseParams, tools) {
+  const paramsWithExtras = {
+    ...baseParams,
+    ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
+  };
 
   try {
-    return await fetchCompletion(paramsWithTools);
+    return await fetchCompletion(paramsWithExtras);
   } catch (err) {
-    if (
-      err.status === 400 &&
-      tools?.length &&
-      (err.body?.includes('tool') || err.body?.includes('function') || err.body?.includes('not supported'))
-    ) {
+    // Reintento 1: quitar tools si no soportados
+    if (isToolsUnsupportedError(err) && tools?.length) {
       console.warn(`[${LABEL}] ${MODEL} no soporta tools. Reintentando sin tools...`);
-      return await fetchCompletion(baseParams);
+      try {
+        return await fetchCompletion(baseParams);
+      } catch (err2) {
+        // Reintento 2: si tampoco soporta response_format, reintenta sin schema
+        if (isSchemaUnsupportedError(err2)) {
+          console.warn(`[${LABEL}] ${MODEL} no soporta response_format. Reintentando sin schema...`);
+          const { response_format, ...rest } = baseParams;
+          return await fetchCompletion(rest);
+        }
+        throw err2;
+      }
+    }
+    // Reintento 2 directo: si solo response_format no soportado (tools vacío)
+    if (isSchemaUnsupportedError(err)) {
+      console.warn(`[${LABEL}] ${MODEL} no soporta response_format. Reintentando sin schema...`);
+      const { response_format, ...rest } = baseParams;
+      return await fetchCompletion(rest);
     }
     throw err;
   }
@@ -371,19 +493,17 @@ async function fetchWithToolsFallback(baseParams, tools) {
 
 /**
  * Envía mensajes al modelo LLM y devuelve la respuesta.
- * Reintenta 1 vez ante 429/503 (respetando retry-after). Errores con
- * `err.kind` ya clasificado se propagan tal cual al llamador.
+ * Reintenta 1 vez ante 429/503 (respetando retry-after).
  *
- * @param {Object} params
- * @param {Array} params.messages      — Historial de mensajes (formato OpenAI)
- * @param {number} [params.temperature] — Temperatura de generación (default: 0.2)
- * @param {Array}  [params.tools]       — Schema de tools/funciones (opcional)
- * @returns {{raw: Object, message: Object, usage: Object|null, cost: number|null, generationId: string|null}}
+ * Diferencias por provider:
+ *  - openrouter: incluye reasoning: {effort: 'low'} y response_format json_schema
+ *  - nvidia:     omite reasoning (no soportado). response_format se intenta y se
+ *                quita en runtime si el modelo responde 400/422 (fetchWithFallbacks).
  */
 export async function llmChat({ messages, temperature = 0.2, tools = undefined }) {
   if (!isConfigured()) {
     throw new Error(
-      'API key no configurada. Configurala desde la pantalla de inicio o edita apps/api/.env con tu OPENROUTER_API_KEY.'
+      'API key no configurada. Configurala desde la pantalla de inicio o edita apps/api/.env con tu OPENROUTER_API_KEY o NVIDIA_API_KEY.'
     );
   }
 
@@ -392,7 +512,7 @@ export async function llmChat({ messages, temperature = 0.2, tools = undefined }
     messages,
     temperature,
     max_tokens: 4096,
-    reasoning: { effort: 'low' },
+    ...(PROVIDER === 'openrouter' && { reasoning: { effort: 'low' } }),
     response_format: RESPONSE_FORMAT,
   };
 
@@ -401,7 +521,7 @@ export async function llmChat({ messages, temperature = 0.2, tools = undefined }
 
   while (true) {
     try {
-      const result = await fetchWithToolsFallback(baseParams, tools);
+      const result = await fetchWithFallbacks(baseParams, tools);
 
       const usage = result.usage;
       const promptTokens = usage?.prompt_tokens ?? '?';
@@ -434,9 +554,8 @@ export async function llmChat({ messages, temperature = 0.2, tools = undefined }
 
       if ((status === 429 || status === 503) && err.retriable && attempt < maxRetries) {
         const retryAfter = Number(err.retryAfter);
-        const baseDelayMs = Number.isFinite(retryAfter) && retryAfter > 0
-          ? retryAfter * 1000
-          : 600 * Math.pow(2, attempt);
+        const baseDelayMs =
+          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 600 * Math.pow(2, attempt);
         const jitterMs = Math.floor(Math.random() * 200);
         const delayMs = baseDelayMs + jitterMs;
 
@@ -470,5 +589,3 @@ export async function llmChat({ messages, temperature = 0.2, tools = undefined }
 
 // Alias de compatibilidad con el nombre original
 export { llmChat as nvidiaChat };
-
-
