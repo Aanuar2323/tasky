@@ -10,6 +10,8 @@
  * info/ → Metadatos del proyecto (areas.json, name.txt)
  * chat/areas/ → Historial de conversaciones por área y chat (archivos .jsonl)
  * ai/layer2/areas/<areaId>/ → Contexto por área (summary.md, rules.md)
+ * chat/areas/ → Historial de conversaciones por área y chat (archivos .jsonl)
+ * ai/layer2/areas/<areaId>/ → Contexto por área (summary(ajkwygebfickuvaulwakfjbscfa).md, rules(ajkwygebfickuvaulwakfjbscfa).md)
  * history/areas/<areaId>/files/ → Archivos completados por área
  * tasks/
  *   inbox/ → Tareas pendientes
@@ -24,6 +26,14 @@ import path from 'node:path';
 /* ==========================================================
    Configuración del directorio raíz de almacenamiento
    ========================================================== */
+
+/**
+ * Nombres de archivo (por área) con marker ofuscador.
+ * El frontend oculta estos nombres exactos en el árbol visible.
+ * Renombrarlos aquí repercute en storage.js, index.js, tests y SidePanel.tsx.
+ */
+export const AREA_RULES_FILE = 'rules(ajkwygebfickuvaulwakfjbscfa).md';
+export const AREA_SUMMARY_FILE = 'summary(ajkwygebfickuvaulwakfjbscfa).md';
 
 /**
  * Raíz donde se guarda todo el storage.
@@ -254,7 +264,7 @@ Si falla algún punto, corrige antes de responder.
     for (const area of areas) {
       const areaDir = path.join(root, 'ai', 'layer2', 'areas', area.id);
       await fs.mkdir(areaDir, { recursive: true });
-      const areaSummaryPath = path.join(areaDir, 'summary.md');
+      const areaSummaryPath = path.join(areaDir, AREA_SUMMARY_FILE);
       try {
         await fs.access(areaSummaryPath);
       } catch {
@@ -274,7 +284,7 @@ Este resumen se incluye SOLO cuando se trabaja en esta área.
           'utf8'
         );
       }
-      const areaRulesPath = path.join(areaDir, 'rules.md');
+      const areaRulesPath = path.join(areaDir, AREA_RULES_FILE);
       try {
         await fs.access(areaRulesPath);
       } catch {

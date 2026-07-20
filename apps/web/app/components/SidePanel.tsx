@@ -41,6 +41,11 @@ interface Rule {
   enabled: boolean;
 }
 
+const HIDDEN_FILES = new Set([
+  "rules(ajkwygebfickuvaulwakfjbscfa).md",
+  "summary(ajkwygebfickuvaulwakfjbscfa).md",
+]);
+
 const FILE_ICON_DOC = (
   <svg viewBox="0 0 13 13" fill="none" stroke="currentColor">
     <path d="M3 1.5h4l2 2v7.5H3V1.5z" strokeLinejoin="round" />
@@ -66,14 +71,6 @@ const FILE_ICON_MD = (
   <svg viewBox="0 0 13 13" fill="none" stroke="currentColor">
     <path d="M3 2.5h7v8H3v-8z" strokeLinejoin="round" />
     <path d="M5 5v3M5 5l1.5 1.5M6.5 6.5L8 5M8 5v3" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const ICON_MENU = (
-  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor">
-    <circle cx="3" cy="6" r="1" fill="currentColor" />
-    <circle cx="6" cy="6" r="1" fill="currentColor" />
-    <circle cx="9" cy="6" r="1" fill="currentColor" />
   </svg>
 );
 
@@ -149,9 +146,11 @@ export default function SidePanel({
 }: SidePanelProps) {
   const [filter, setFilter] = useState<FilterKey>("recent");
   const [rules, setRules] = useState<Rule[]>([]);
+  const [menuOpenIdx, setMenuOpenIdx] = useState<number | null>(null);
+  const [fileMenuIdx, setFileMenuIdx] = useState<number | null>(null);
 
   const files: FileEntry[] = treeEntries
-    .filter((e) => e.type === "file")
+    .filter((e) => e.type === "file" && !HIDDEN_FILES.has(e.name))
     .map((e) => ({
       name: e.name,
       meta: fileTypeFromTreeEntry(e.type).toUpperCase(),
@@ -193,29 +192,49 @@ export default function SidePanel({
     await onUpdateRules(rulesToMarkdown(nextRules));
   };
 
-  const handleDownloadContext = useCallback(async () => {
-    if (!projectId || files.length === 0) return;
-    const first = files[0];
-    if (!first.path) return;
+  const handleEditRule = async (idx: number) => {
+    const rule = rules[idx];
+    const name = window.prompt("Nombre de la regla", rule.name);
+    if (!name?.trim()) return;
+    const desc = window.prompt("Descripcion corta", rule.desc) ?? "";
+    const nextRules = rules.map((r, i) =>
+      i === idx ? { ...r, name: name.trim(), desc: desc.trim() } : r
+    );
+    setRules(nextRules);
+    await onUpdateRules(rulesToMarkdown(nextRules));
+  };
+
+  const handleDeleteRule = async (idx: number) => {
+    const nextRules = rules.filter((_, i) => i !== idx);
+    setRules(nextRules);
+    await onUpdateRules(rulesToMarkdown(nextRules));
+  };
+
+  const downloadFileEntry = useCallback(async (entry: FileEntry) => {
+    if (!projectId || !entry.path) return;
     try {
-      const blob = await downloadFile(projectId, first.path);
+      const blob = await downloadFile(projectId, entry.path);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = first.name;
+      a.download = entry.name;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error("Context download failed:", err);
+      console.error("File download failed:", err);
     }
-  }, [projectId, files]);
+  }, [projectId]);
 
-  const handleDeleteContext = useCallback(async () => {
-    const first = files[0];
-    if (!first?.path) return;
-    await onDeleteContextFile(first.path);
+  const handleDownloadContext = useCallback(async () => {
+    if (!projectId || files.length === 0) return;
+    await downloadFileEntry(files[0]);
+  }, [projectId, files, downloadFileEntry]);
+
+  const deleteFileEntry = useCallback(async (entry: FileEntry) => {
+    if (!entry.path) return;
+    await onDeleteContextFile(entry.path);
     await onRefreshInfo();
-  }, [files, onDeleteContextFile, onRefreshInfo]);
+  }, [onDeleteContextFile, onRefreshInfo]);
 
   const historyGroups: HistoryGroup[] = Array.isArray(generatedHistory)
     ? (generatedHistory as HistoryGroup[])
@@ -306,30 +325,7 @@ export default function SidePanel({
             className="sp-pane"
             aria-current={tab === "info" ? "true" : "false"}
           >
-            <div className="sp-card">
-              <div className="sp-card-eyebrow">Información</div>
-              <div className="kv-row">
-                <span className="k">Proyecto</span>
-                  <span className="v">Tasky</span>
-              </div>
-              <div className="kv-row">
-                <span className="k">Área</span>
-                <span className="v">{areaName}</span>
-              </div>
-              <div className="kv-row">
-                <span className="k">Archivos</span>
-                <span className="v">
-                  {files.length
-                    ? `${files.length} visible${files.length !== 1 ? "s" : ""}`
-                    : "sin archivos"}
-                </span>
-              </div>
-              <div className="sp-card-foot">
-                Archivos visibles solo de esta sección. No hay navegación entre
-                carpetas.
-              </div>
-            </div>
-
+           
             <div className="sp-card">
               <div className="sp-card-eyebrow">Contexto del área</div>
               <p
@@ -346,12 +342,6 @@ export default function SidePanel({
                 <button className="sp-act" data-tone="primary" onClick={() => void onUploadContextFile()}>
                   {ADD_SVG} Agregar
                 </button>
-                <button className="sp-act" onClick={handleDownloadContext} disabled={files.length === 0}>
-                  {DOWNLOAD_SVG} Descargar
-                </button>
-                <button className="sp-act" data-tone="danger" onClick={handleDeleteContext} disabled={files.length === 0}>
-                  {DELETE_SVG} Eliminar
-                </button>
               </div>
 
               {files.length === 0 ? (
@@ -367,18 +357,54 @@ export default function SidePanel({
                       <div className="fr-name">{f.name}</div>
                       <div className="fr-meta">{f.meta}</div>
                     </div>
-                    <button
-                      className="fr-menu"
-                      data-tip="Más"
-                      aria-label="Más"
-                      onClick={async () => {
-                        if (!f.path) return;
-                        await onDeleteContextFile(f.path);
-                        await onRefreshInfo();
-                      }}
-                    >
-                      {ICON_MENU}
-                    </button>
+                    <div className="fr-kebab-wrap">
+                      <button
+                        className="fr-kebab"
+                        aria-label="Más opciones"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFileMenuIdx(fileMenuIdx === i ? null : i);
+                        }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <circle cx="7" cy="2.5" r="1.3" fill="currentColor" />
+                          <circle cx="7" cy="7" r="1.3" fill="currentColor" />
+                          <circle cx="7" cy="11.5" r="1.3" fill="currentColor" />
+                        </svg>
+                      </button>
+                      {fileMenuIdx === i && (
+                        <>
+                          <div
+                            className="fr-menu-backdrop"
+                            onClick={() => setFileMenuIdx(null)}
+                          />
+                          <div className="fr-menu" role="menu">
+                            <button
+                              className="fr-menu-item"
+                              role="menuitem"
+                              onClick={() => {
+                                setFileMenuIdx(null);
+                                void downloadFileEntry(f);
+                              }}
+                            >
+                              <span className="fr-menu-icon">{DOWNLOAD_SVG}</span>
+                              Descargar
+                            </button>
+                            <button
+                              className="fr-menu-item fr-menu-item-danger"
+                              role="menuitem"
+                              onClick={() => {
+                                setFileMenuIdx(null);
+                                void deleteFileEntry(f);
+                              }}
+                            >
+                              <span className="fr-menu-icon">{DELETE_SVG}</span>
+                              Eliminar
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))
               )}
@@ -463,7 +489,7 @@ export default function SidePanel({
                   <div
                     key={i}
                     className="rule-row"
-                    aria-enabled={r.enabled ? "true" : "false"}
+                    data-enabled={r.enabled ? "true" : "false"}
                   >
                     <div className="rr-body">
                       <div className="rr-name">{r.name}</div>
@@ -485,6 +511,50 @@ export default function SidePanel({
                         void toggleRule(i);
                       }}
                     />
+                    <div className="rr-kebab-wrap">
+                      <button
+                        className="rr-kebab"
+                        aria-label="Más opciones"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpenIdx(menuOpenIdx === i ? null : i);
+                        }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <circle cx="7" cy="2.5" r="1.3" fill="currentColor" />
+                          <circle cx="7" cy="7" r="1.3" fill="currentColor" />
+                          <circle cx="7" cy="11.5" r="1.3" fill="currentColor" />
+                        </svg>
+                      </button>
+                      {menuOpenIdx === i && (
+                        <>
+                          <div
+                            className="rr-menu-backdrop"
+                            onClick={() => setMenuOpenIdx(null)}
+                          />
+                          <div className="rr-menu">
+                            <button
+                              className="rr-menu-item"
+                              onClick={() => {
+                                setMenuOpenIdx(null);
+                                void handleEditRule(i);
+                              }}
+                            >
+                              Editar regla
+                            </button>
+                            <button
+                              className="rr-menu-item rr-menu-item-danger"
+                              onClick={() => {
+                                setMenuOpenIdx(null);
+                                void handleDeleteRule(i);
+                              }}
+                            >
+                              Eliminar regla
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))
               )}

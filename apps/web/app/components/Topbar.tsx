@@ -243,6 +243,17 @@ export default function Topbar({
       <div className="right">
         <button
           className="icon-btn"
+          data-tip="Info"
+          aria-label="Info"
+          onClick={() => onOpenPanel("info")}
+        >
+          <svg viewBox="-2 0 16 16" fill="none" stroke="currentColor">
+            <circle cx="6" cy="8" r="5.5" />
+            <path d="M6 5.5v3M8 8.5v.1" strokeLinecap="round" />
+          </svg>
+        </button>
+        <button
+          className="icon-btn"
           data-tip="Historial"
           onClick={() => onOpenPanel("historial")}
         >
@@ -264,18 +275,7 @@ export default function Topbar({
             <path d="M5 8h6M5 10.5h4" strokeLinecap="round" />
           </svg>
         </button>
-        <button
-          className="icon-btn"
-          data-tip="Info"
-          aria-label="Info"
-          onClick={() => onOpenPanel("info")}
-        >
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
-            <circle cx="8" cy="8" r="5.5" />
-            <path d="M8 5.5v3M8 8.5v.1" strokeLinecap="round" />
-          </svg>
-        </button>
-        <div className="user-avatar">
+                <div className="user-avatar">
           U
         </div>
       </div>

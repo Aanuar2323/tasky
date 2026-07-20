@@ -29,8 +29,12 @@ import {
   downloadFile,
   deleteChat,
   deleteArea,
+  getProviders,
+  setProvider as setProviderApi,
+  setProviderKey,
 } from "./lib/api";
-import type { Area, ChatLogEntry, TreeEntry, ModelInfo } from "./lib/api";
+import type { Area, ChatLogEntry, TreeEntry, ModelInfo, Provider, ProviderInfo, ApiErrorBody } from "./lib/api";
+import ModelSelectorModal from "./components/ModelSelectorModal";
 import type { ChatMessage } from "./types/chat";
 
 export default function Home() {
@@ -48,9 +52,13 @@ export default function Home() {
   const [setupMode, setSetupMode] = useState(true);
   const [setupApiKey, setSetupApiKey] = useState("");
   const [setupModel, setSetupModel] = useState("");
+  const [setupProvider, setSetupProvider] = useState<Provider>("openrouter");
   const [setupSaving, setSetupSaving] = useState(false);
   const [setupError, setSetupError] = useState("");
   const [currentModel, setCurrentModel] = useState("");
+  const [activeProvider, setActiveProvider] = useState<Provider>("openrouter");
+  const [providersInfo, setProvidersInfo] = useState<Record<Provider, ProviderInfo>>({} as Record<Provider, ProviderInfo>);
+  const [showConfigModal, setShowConfigModal] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsFetched, setModelsFetched] = useState(false);
@@ -72,12 +80,14 @@ export default function Home() {
               : rawFile
                 ? { name: String(rawFile.filename ?? ""), url: String(rawFile.path ?? ""), type: String(rawFile.type ?? ""), meta: String(rawFile.type ?? "").toUpperCase() }
                 : undefined;
+            const rawError = e.error as { title: string; hint: string; codes: number[] } | undefined;
             return {
               role: e.role as "user" | "assistant",
               content: e.content,
               ts: e.ts as number | undefined,
               file,
               meta: e.meta as ChatMessage["meta"],
+              error: rawError?.title ? rawError : undefined,
             } as ChatMessage;
           })
         );
@@ -137,9 +147,17 @@ export default function Home() {
         const status = await checkApiStatus();
         if (!status.configured) {
           setSetupMode(true);
+          if (status.openrouterConfigured) {
+            setSetupProvider("openrouter");
+          } else if (status.nvidiaConfigured) {
+            setSetupProvider("nvidia");
+          }
+          setProvidersInfo(status.availableProviders ?? {});
           return;
         }
         setCurrentModel(status.model || "");
+        setActiveProvider(status.providerId || "openrouter");
+        setProvidersInfo(status.availableProviders ?? {});
       } catch {
         setSetupMode(true);
         return;
@@ -235,6 +253,72 @@ export default function Home() {
       console.error("Add area failed:", err);
     }
   }, [projectId, areas]);
+
+  const handleRenameArea = useCallback(
+    async (areaId: string, name: string) => {
+      if (!projectId || !name.trim()) return;
+      const updatedAreas = areas.map((a) =>
+        a.id === areaId ? { ...a, name: name.trim() } : a
+      );
+      setAreas(updatedAreas);
+      try {
+        await updateAreas(projectId, { areas: updatedAreas, activeAreaId });
+      } catch (err) {
+        console.error("Rename area failed:", err);
+      }
+    },
+    [projectId, areas, activeAreaId]
+  );
+
+  const handleDeleteArea = useCallback(
+    async (areaId: string) => {
+      if (!projectId) return;
+      // regla: no eliminar la última área
+      if (areas.length <= 1) return;
+      try {
+        await deleteArea(projectId, areaId);
+      } catch (err) {
+        console.error("Delete area failed:", err);
+        return;
+      }
+      const remaining = areas.filter((a) => a.id !== areaId);
+      setAreas(remaining);
+      // Si se elimina el área activa, mover a otra
+      if (activeAreaId === areaId) {
+        const nextArea = remaining[0];
+        if (nextArea) {
+          const nextChatId =
+            nextArea.activeChatId || nextArea.chats?.[0]?.id || "";
+          setActiveAreaId(nextArea.id);
+          setActiveChatId(nextChatId);
+          setSidePanelOpen(false);
+          try {
+            await updateAreas(projectId, {
+              areas: remaining,
+              activeAreaId: nextArea.id,
+            });
+          } catch (err) {
+            console.error("Persist active area after delete failed:", err);
+          }
+          if (nextChatId) {
+            await loadChatLog(projectId, nextArea.id, nextChatId);
+          } else {
+            setChatMessages([]);
+          }
+        }
+      } else {
+        try {
+          await updateAreas(projectId, {
+            areas: remaining,
+            activeAreaId,
+          });
+        } catch (err) {
+          console.error("Persist after delete failed:", err);
+        }
+      }
+    },
+    [projectId, areas, activeAreaId, loadChatLog]
+  );
 
   const handleSelectChat = useCallback(
     async (areaId: string, chatId: string) => {
@@ -391,15 +475,15 @@ export default function Home() {
       })
       .catch((err) => {
         console.error("Send failed:", err);
-        const kind = (err as any).kind;
+        const e = err as Error & Required<ApiErrorBody>;
+        const errorHuman = e.errorHuman;
         setChatMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: kind === "unauthorized"
-              ? "API key inválida o sin fondos."
-              : `Error: ${err instanceof Error ? err.message : "Error del servidor"}`,
+            content: "",
             ts: Date.now(),
+            error: errorHuman?.title ? errorHuman : { title: "Error inesperado", hint: "Algo salió mal. Reintentá o cambiá de modelo.", codes: [e.upstreamStatus || 502].filter(Boolean), retriable: e.retriable ?? false },
           },
         ]);
       })
@@ -556,18 +640,88 @@ export default function Home() {
     });
   }, []);
 
-  const handleFetchModels = useCallback(async () => {
-    if (!setupApiKey.trim()) {
+  const handleRetry = useCallback((msgIndex: number) => {
+    setChatMessages((prev) => {
+      const errMsg = prev[msgIndex];
+      if (!errMsg) return prev;
+      // Find the user message before this error
+      let userContent = "";
+      for (let j = msgIndex - 1; j >= 0; j--) {
+        if (prev[j].role === "user") {
+          userContent = prev[j].content;
+          break;
+        }
+      }
+      if (!userContent) return prev;
+
+      // Remove the error message
+      const filtered = prev.filter((_, i) => i !== msgIndex);
+
+      // Re-send
+      setInputText(userContent);
+      setTimeout(() => {
+        setInputText("");
+        setLoading(true);
+        const allMessages = [...filtered, { role: "user", content: userContent }].map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+        sendMessage(projectId, {
+          messages: allMessages,
+          areaId: activeAreaId,
+          chatId: activeChatId,
+        })
+          .then((res) => {
+            const assistantMsg: ChatMessage = {
+              role: "assistant",
+              content: res.content,
+              ts: Date.now(),
+              file: res.file as ChatMessage["file"],
+              meta: res.meta as ChatMessage["meta"],
+            };
+            setChatMessages((prev2) => [...prev2, assistantMsg]);
+          })
+          .catch((err2) => {
+            const e2 = err2 as Error & Required<ApiErrorBody>;
+            const errorHuman = e2.errorHuman;
+            setChatMessages((prev2) => [
+              ...prev2,
+              {
+                role: "assistant",
+                content: "",
+                ts: Date.now(),
+                error: errorHuman?.title ? errorHuman : { title: "Error inesperado", hint: "Algo salió mal. Reintentá o cambiá de modelo.", codes: [e2.upstreamStatus || 502].filter(Boolean), retriable: e2.retriable ?? false },
+              },
+            ]);
+          })
+          .finally(() => setLoading(false));
+      }, 0);
+
+      return filtered;
+    });
+  }, [projectId, activeAreaId, activeChatId]);
+
+  const handleFetchModels = useCallback(async (provider?: Provider) => {
+    const p = provider ?? setupProvider;
+    const key = setupApiKey.trim();
+    if (!key && !(providersInfo[p]?.configured)) {
       setSetupError("Ingresa una API key primero");
       return;
     }
     setModelsLoading(true);
     setSetupError("");
     try {
-      const { models: modelList } = await fetchModels(setupApiKey.trim());
+      // Si hay API key nueva en el input, primero persistirla en backend
+      // para que getModelsForProvider pueda usarla.
+      if (key && !(providersInfo[p]?.configured)) {
+        await setProviderKey(p, key);
+        const { providers } = await getProviders();
+        setProvidersInfo(providers);
+      }
+      const { models: modelList } = await fetchModels(p);
       setModels(modelList);
       setModelsFetched(true);
-      if (modelList.length > 0) {
+      if (modelList.length > 0 && !setupModel) {
         setSetupModel(modelList[0].id);
       }
     } catch (err) {
@@ -575,7 +729,7 @@ export default function Home() {
     } finally {
       setModelsLoading(false);
     }
-  }, [setupApiKey]);
+  }, [setupApiKey, setupProvider, providersInfo, setupModel]);
 
   const handleSaveSetup = useCallback(async () => {
     if (!setupApiKey.trim()) {
@@ -585,7 +739,7 @@ export default function Home() {
     setSetupSaving(true);
     setSetupError("");
     try {
-      await saveSetup(setupApiKey.trim(), setupModel || undefined);
+      await saveSetup(setupApiKey.trim(), setupModel || undefined, setupProvider);
       setSetupMode(false);
       window.location.reload();
     } catch (err) {
@@ -593,21 +747,62 @@ export default function Home() {
     } finally {
       setSetupSaving(false);
     }
-  }, [setupApiKey, setupModel]);
+  }, [setupApiKey, setupModel, setupProvider]);
 
   const handleChangeModel = useCallback(async (model: string) => {
     try {
-      await updateModel(model);
+      await updateModel(model, activeProvider);
       setCurrentModel(model);
+      // persistir modelo por provider en localStorage
+      try {
+        const saved = JSON.parse(localStorage.getItem("modelOverrides") || "{}");
+        saved[activeProvider] = model;
+        localStorage.setItem("modelOverrides", JSON.stringify(saved));
+      } catch { /* ignore */ }
     } catch (err) {
       console.error("Error cambiando modelo:", err);
     }
-  }, []);
+  }, [activeProvider]);
 
-  const handleFetchModelsInApp = useCallback(async () => {
+  const handleProviderChange = useCallback(async (provider: Provider) => {
+    if (!providersInfo[provider]?.configured) return;
+    try {
+      await setProviderApi(provider);
+      // recargar modelo preferido para este provider
+      let modelOverride = "";
+      try {
+        const saved = JSON.parse(localStorage.getItem("modelOverrides") || "{}");
+        modelOverride = saved[provider] || "";
+      } catch { /* ignore */ }
+      const newModel = modelOverride || providersInfo[provider]?.model || "";
+      setCurrentModel(newModel);
+      setActiveProvider(provider);
+      setModels([]);
+      setModelsFetched(false);
+      // refresh providers
+      const { providers } = await getProviders();
+      setProvidersInfo(providers);
+    } catch (err) {
+      console.error("Error cambiando provider:", err);
+    }
+  }, [providersInfo]);
+
+  const handleSaveProviderKey = useCallback(async (provider: Provider, apiKey: string) => {
+    await setProviderKey(provider, apiKey);
+    // refresh providers info
+    const { providers } = await getProviders();
+    setProvidersInfo(providers);
+    // si key guardada es del setup provider, activarla para comienzo
+    if (setupMode) {
+      setSetupProvider(provider);
+    }
+  }, [setupMode]);
+
+  const handleFetchModelsInApp = useCallback(async (provider?: Provider) => {
+    const p = provider ?? activeProvider;
     setModelsLoading(true);
     try {
-      const { models: modelList } = await fetchModels("");
+      const { models: modelList } = await fetchModels(p);
       setModels(modelList);
       setModelsFetched(true);
     } catch (err) {
@@ -615,190 +810,34 @@ export default function Home() {
     } finally {
       setModelsLoading(false);
     }
-  }, []);
+  }, [activeProvider]);
 
   if (setupMode) {
+    const initProviders: Record<Provider, ProviderInfo> =
+      Object.keys(providersInfo).length > 0
+        ? providersInfo
+        : ({} as Record<Provider, ProviderInfo>);
     return (
-      <div className="setup-screen">
-        <div className="setup-card">
-          <h1 className="setup-title">Tasky</h1>
-          <p className="setup-subtitle">
-            Para usar la app necesitás una API key de OpenRouter.
-          </p>
-          <div className="setup-field">
-            <label htmlFor="apiKey">API Key de OpenRouter</label>
-            <input
-              id="apiKey"
-              type="password"
-              placeholder="sk-or-v1-..."
-              value={setupApiKey}
-              onChange={(e) => setSetupApiKey(e.target.value)}
-            />
-          </div>
-          <div className="setup-field">
-            <label htmlFor="model">Modelo</label>
-            {modelsFetched && models.length > 0 ? (
-              <select
-                id="model"
-                value={setupModel}
-                onChange={(e) => setSetupModel(e.target.value)}
-              >
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}{m.isFree ? ' (free)' : ''} — {m.id}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <div className="setup-model-row">
-                <input
-                  id="model"
-                  type="text"
-                  placeholder="openai/gpt-oss-120b:free"
-                  value={setupModel}
-                  onChange={(e) => setSetupModel(e.target.value)}
-                />
-                <button
-                  className="setup-fetch-btn"
-                  onClick={handleFetchModels}
-                  disabled={modelsLoading || !setupApiKey.trim()}
-                >
-                  {modelsLoading ? "Cargando..." : "Cargar modelos"}
-                </button>
-              </div>
-            )}
-          </div>
-          {setupError && <p className="setup-error">{setupError}</p>}
-          <button
-            className="setup-btn"
-            onClick={handleSaveSetup}
-            disabled={setupSaving}
-          >
-            {setupSaving ? "Guardando..." : "Comenzar"}
-          </button>
-        </div>
-        <style>{`
-          .setup-screen {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            background: #0a0a0a;
-            font-family: system-ui, sans-serif;
-          }
-          .setup-card {
-            background: #1a1a1a;
-            padding: 2.5rem;
-            border-radius: 1rem;
-            width: 100%;
-            max-width: 420px;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-          }
-          .setup-title {
-            font-size: 1.8rem;
-            font-weight: 700;
-            text-align: center;
-            color: #fff;
-            margin: 0 0 0.5rem;
-          }
-          .setup-subtitle {
-            text-align: center;
-            color: #999;
-            font-size: 0.9rem;
-            margin: 0 0 1.5rem;
-            line-height: 1.4;
-          }
-          .setup-field {
-            margin-bottom: 1rem;
-          }
-          .setup-field label {
-            display: block;
-            font-size: 0.85rem;
-            color: #ccc;
-            margin-bottom: 0.35rem;
-          }
-          .setup-field input {
-            width: 100%;
-            padding: 0.65rem 0.75rem;
-            border-radius: 0.5rem;
-            border: 1px solid #333;
-            background: #111;
-            color: #fff;
-            font-size: 0.95rem;
-            box-sizing: border-box;
-          }
-          .setup-field input::placeholder {
-            color: #555;
-          }
-          .setup-field select {
-            width: 100%;
-            padding: 0.65rem 0.75rem;
-            border-radius: 0.5rem;
-            border: 1px solid #333;
-            background: #111;
-            color: #fff;
-            font-size: 0.95rem;
-            box-sizing: border-box;
-            appearance: none;
-            cursor: pointer;
-          }
-          .setup-field select optgroup,
-          .setup-field select option {
-            background: #1a1a1a;
-            color: #ccc;
-            padding: 4px 8px;
-          }
-          .setup-model-row {
-            display: flex;
-            gap: 8px;
-          }
-          .setup-model-row input {
-            flex: 1;
-          }
-          .setup-fetch-btn {
-            padding: 0.65rem 1rem;
-            border-radius: 0.5rem;
-            border: 1px solid #333;
-            background: #222;
-            color: #ccc;
-            font-size: 0.85rem;
-            cursor: pointer;
-            white-space: nowrap;
-            transition: background 0.2s, color 0.2s;
-          }
-          .setup-fetch-btn:hover:not(:disabled) {
-            background: #333;
-            color: #fff;
-          }
-          .setup-fetch-btn:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-          }
-          .setup-error {
-            color: #f87171;
-            font-size: 0.85rem;
-            margin: 0 0 1rem;
-          }
-          .setup-btn {
-            width: 100%;
-            padding: 0.7rem;
-            border: none;
-            border-radius: 0.5rem;
-            background: #3b82f6;
-            color: #fff;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.2s;
-          }
-          .setup-btn:hover {
-            background: #2563eb;
-          }
-          .setup-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-          }
-        `}</style>
+      <div className="page">
+        <ModelSelectorModal
+          open
+          isFirstRun
+          providers={initProviders}
+          activeProvider={setupProvider}
+          models={models}
+          modelsLoading={modelsLoading}
+          selectedProvider={setupProvider}
+          selectedModel={setupModel}
+          errorMessage={setupError}
+          pending={setupSaving}
+          onSelectProvider={(p) => setSetupProvider(p)}
+          onChangeModel={(m) => setSetupModel(m)}
+          onFetchModels={(p) => handleFetchModels(p)}
+          onSaveKey={async (p, k) => {
+            await handleSaveProviderKey(p, k);
+          }}
+          onSaveSetup={handleSaveSetup}
+        />
       </div>
     );
   }
@@ -830,6 +869,8 @@ export default function Home() {
           onSelectArea={handleSelectArea}
           onOpenPanel={handleOpenPanel}
           onAddArea={handleAddArea}
+          onRenameArea={handleRenameArea}
+          onDeleteArea={handleDeleteArea}
         />
         <main className="chat" data-panel={sidePanelOpen ? "open" : "closed"}>
           <SidePanel
@@ -855,6 +896,7 @@ export default function Home() {
             onConfirm={handleConfirm}
             onDeny={handleDeny}
             onDownload={handleDownload}
+            onRetry={handleRetry}
           />
           <Composer
             value={inputText}
@@ -863,13 +905,28 @@ export default function Home() {
             onAttach={handleAttach}
           />
           {!setupMode && (
-            <ModelBar
-              currentModel={currentModel}
-              models={models}
-              modelsLoading={modelsLoading}
-              onFetchModels={handleFetchModelsInApp}
-              onChangeModel={handleChangeModel}
-            />
+            <>
+              <ModelBar
+                activeProvider={activeProvider}
+                providers={providersInfo}
+                currentModel={currentModel}
+                onOpen={() => setShowConfigModal(true)}
+              />
+              <ModelSelectorModal
+                open={showConfigModal}
+                providers={providersInfo}
+                activeProvider={activeProvider}
+                models={models}
+                modelsLoading={modelsLoading}
+                selectedProvider={activeProvider}
+                selectedModel={currentModel}
+                onClose={() => setShowConfigModal(false)}
+                onSelectProvider={handleProviderChange}
+                onChangeModel={handleChangeModel}
+                onFetchModels={handleFetchModelsInApp}
+                onSaveKey={handleSaveProviderKey}
+              />
+            </>
           )}
         </main>
       </div>

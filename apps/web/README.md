@@ -1,36 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Tasky Web — Frontend
 
-## Getting Started
+interfaz de usuario de Tasky, construida con **Next.js 16 + React 19 + TypeScript**.
 
-First, run the development server:
+## Estructura
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+app/
++-- layout.tsx                # Root layout (carga globals.css + workspace.css)
++-- page.tsx                  # Pagina principal: detecta setup vs workspace y monta el modal o el shell
++-- globals.css               # Tailwind base (sin componentes)
++-- workspace.css             # Design system Tasky. Design tokens en :root, todo CSS custom (sin Tailwind)
++-- lib/
+|   +-- api.ts                # Cliente HTTP tipado hacia apps/api (Express). Tipos: Provider, ProviderInfo, ApiStatus, etc.
+|   +-- rules-parser.ts       # Parseo/stringify de reglas Markdown (soporta tags enabled/disabled explicitos)
++-- types/
+|   +-- chat.ts               # Tipos de mensajes del chat
++-- components/
+    +-- Topbar.tsx            # Barra superior con selector de chats por area
+    +-- Sidebar.tsx           # Panel lateral con areas de trabajo
+    +-- ChatPanel.tsx         # Panel de chat con mensajes IA
+    +-- Composer.tsx          # Input de mensajes con attachments
+    +-- ModelBar.tsx          # Pill trigger unico: provider + modelo, click abre ModelSelectorModal
+    +-- ModelSelectorModal.tsx # Modal flotante unificado: setup inicial + cambio provider/modelo en caliente
+    +-- SidePanel.tsx         # Panel Info / Historial / Reglas por area (kebab menu en reglas)
+    +-- MarkdownRenderer.tsx  # Renderizado Markdown -> HTML
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Setup
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Este sub-app se ejecuta dentro del monorepo. Ver la guia completa en el [`README.md`](../../README.md) raiz.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+# desde la raiz del repo
+npm install
+npm run dev         # alias de `next dev` (puerto 3000)
+# o directo:
+npx next dev -w apps/web
+```
 
-## Learn More
+`apps/web/.env.local` se crea automaticamente desde `.env.example` en `postinstall`.
 
-To learn more about Next.js, take a look at the following resources:
+## Design system
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Todo el styling vive en `app/workspace.css` como CSS plano. Los design tokens (colores, fuentes, radios, sombras) estan en el selector `:root`. Convenciones de naming:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `mb-*` — clases del `ModelBar` (trigger del modal)
+- `msm-*` — clases del `ModelSelectorModal` (overlay, modal, tabs, fields, buttons)
+- `rr-*` — reglas en `SidePanel`
+- `sp-*` — `SidePanel`
+- `tp-*` — `Topbar`
 
-## Deploy on Vercel
+No se usa Tailwind para componentes. `globals.css` solo trae la base y resets.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Build de produccion
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run build -w apps/web
+```
+
+Configurado con `output: "standalone"` en `next.config.ts` para empaquetado minimo self-contained, util para deploy en Docker o servidores sin Node toolchain.

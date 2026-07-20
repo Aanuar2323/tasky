@@ -16,4 +16,5 @@ export interface ChatMessage {
   ts?: number;
   file?: ChatFile;
   meta?: ChatMeta;
+  error?: { title: string; hint: string; codes: number[]; retriable?: boolean };
 }

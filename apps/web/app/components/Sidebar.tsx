@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import type { Area } from "@/app/lib/api";
 
 interface SidebarProps {
@@ -9,6 +10,8 @@ interface SidebarProps {
   onSelectArea: (id: string) => void;
   onOpenPanel: (areaId: string, tab: "info" | "historial" | "reglas") => void;
   onAddArea: () => void;
+  onRenameArea: (areaId: string, name: string) => void | Promise<void>;
+  onDeleteArea: (areaId: string) => void | Promise<void>;
 }
 
 const INFO_SVG = (
@@ -38,6 +41,26 @@ const HOME_SVG = (
   </svg>
 );
 
+const RENAME_SVG = (
+  <svg viewBox="0 0 14 14" fill="none" stroke="currentColor">
+    <path d="M2 12h4l6.5-6.5a1.5 1.5 0 0 0-2-2L4 10v2z" strokeLinejoin="round" />
+    <path d="M8.5 4l2 2" strokeLinecap="round" />
+  </svg>
+);
+
+const DELETE_SVG = (
+  <svg viewBox="0 0 14 14" fill="none" stroke="currentColor">
+    <path d="M3 4h8M5.5 4V3a.5.5 0 0 1 .5-.5h2A.5.5 0 0 1 8.5 3v1M4 4l.5 7h5L10 4" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+interface ContextMenuState {
+  areaId: string;
+  areaName: string;
+  x: number;
+  y: number;
+}
+
 function AreaMark({ area }: { area: Area }) {
   const initial = area.name.charAt(0).toUpperCase();
   return (
@@ -54,7 +77,60 @@ export default function Sidebar({
   onSelectArea,
   onOpenPanel,
   onAddArea,
+  onRenameArea,
+  onDeleteArea,
 }: SidebarProps) {
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
+  const [confirmArea, setConfirmArea] = useState<Area | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    function onDown(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setCtxMenu(null);
+        setConfirmArea(null);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
+
+  const handleRename = (area: Area) => {
+    setCtxMenu(null);
+    const name = window.prompt("Nuevo nombre del área", area.name);
+    if (!name || !name.trim() || name.trim() === area.name) return;
+    void onRenameArea(area.id, name.trim());
+  };
+
+  const handleAskDelete = (area: Area) => {
+    setCtxMenu(null);
+    setConfirmArea(area);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!confirmArea) return;
+    setDeleting(true);
+    try {
+      await onDeleteArea(confirmArea.id);
+    } catch (err) {
+      console.error("Delete area failed:", err);
+    } finally {
+      setDeleting(false);
+      setConfirmArea(null);
+    }
+  };
+
   return (
     <aside className="sidebar" style={{ width: collapsed ? 48 : 200 }}>
       <div className="sb-head">
@@ -71,7 +147,6 @@ export default function Sidebar({
         </button>
       </div>
 
-
       <div className="area-list">
         {areas.map((area) => (
           <div
@@ -80,6 +155,15 @@ export default function Sidebar({
             aria-current={area.id === activeAreaId ? "true" : undefined}
             data-name={area.name}
             onClick={() => onSelectArea(area.id)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setCtxMenu({
+                areaId: area.id,
+                areaName: area.name,
+                x: e.clientX,
+                y: e.clientY,
+              });
+            }}
           >
             <AreaMark area={area} />
             {!collapsed && <span className="area-name">{area.name}</span>}
@@ -132,6 +216,94 @@ export default function Sidebar({
           </svg>
         </span>
       </div>
+
+      {ctxMenu && (
+        <div
+          ref={menuRef}
+          className="ctx-menu"
+          style={{
+            position: "fixed",
+            left: Math.min(ctxMenu.x, window.innerWidth - 170),
+            top: Math.min(ctxMenu.y, window.innerHeight - 110),
+          }}
+          role="menu"
+        >
+          <button
+            className="ctx-item"
+            role="menuitem"
+            onClick={() => {
+              const area = areas.find((a) => a.id === ctxMenu.areaId);
+              if (area) handleRename(area);
+            }}
+          >
+            <span className="ctx-item-icon">{RENAME_SVG}</span>
+            Renombrar
+          </button>
+          <button
+            className="ctx-item ctx-item-danger"
+            role="menuitem"
+            onClick={() => {
+              const area = areas.find((a) => a.id === ctxMenu.areaId);
+              if (area) handleAskDelete(area);
+            }}
+          >
+            <span className="ctx-item-icon">{DELETE_SVG}</span>
+            Eliminar
+          </button>
+        </div>
+      )}
+
+      {confirmArea && (
+        <div
+          className="ctx-confirm-overlay"
+          onClick={() => !deleting && setConfirmArea(null)}
+        >
+          <div
+            className="ctx-confirm"
+            onClick={(e) => e.stopPropagation()}
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="Confirmar eliminación de área"
+          >
+            <div className="ctx-confirm-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path
+                  d="M12 3.5l9 16H3l9-16z"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
+                <path
+                  d="M12 9.5v4M12 16.5v.1"
+                  strokeLinecap="round"
+                  strokeWidth="1.8"
+                />
+              </svg>
+            </div>
+            <h3 className="ctx-confirm-title">¿Eliminar área?</h3>
+            <p className="ctx-confirm-body">
+              Estás por eliminar <strong>{confirmArea.name}</strong> con todos
+              sus chats, historial, reglas y archivos de contexto asociados.
+              Esta acción no se puede deshacer.
+            </p>
+            <div className="ctx-confirm-actions">
+              <button
+                className="ctx-btn ctx-btn-secondary"
+                onClick={() => setConfirmArea(null)}
+                disabled={deleting}
+              >
+                Cancelar
+              </button>
+              <button
+                className="ctx-btn ctx-btn-danger"
+                onClick={handleConfirmDelete}
+                disabled={deleting}
+              >
+                {deleting ? "Eliminando..." : "Eliminar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
