@@ -396,3 +396,42 @@ export async function movePath(root, fromRel, toRel) {
   await fs.mkdir(path.dirname(to), { recursive: true });
   await fs.rename(from, to);
 }
+
+/* ==========================================================
+   Skills defaults — copy generators skills from defaults
+   ========================================================== */
+
+const SKILLS_DIR = 'skills/generators';
+const DEFAULTS_SKILLS_ROOT = path.join(STORAGE_ROOT, 'defaults', SKILLS_DIR);
+
+/**
+ * Returns the skills path for a user.
+ * Copies defaults on first access.
+ * @param {string} [userId='default']
+ * @returns {string} absolute path to user skills dir
+ */
+export async function getUserSkillsPath(userId = 'default') {
+  const userSkills = path.join(STORAGE_ROOT, 'users', userId, SKILLS_DIR);
+
+  try {
+    await fs.access(userSkills);
+  } catch {
+    const defaults = path.join(STORAGE_ROOT, 'defaults', SKILLS_DIR);
+    try {
+      const entries = await fs.readdir(DEFAULTS_SKILLS_ROOT);
+      await fs.mkdir(userSkills, { recursive: true });
+      for (const entry of entries) {
+        const src = path.join(DEFAULTS_SKILLS_ROOT, entry);
+        const dst = path.join(userSkills, entry);
+        try {
+          await fs.copyFile(src, dst);
+        } catch { /* best effort */ }
+      }
+    } catch {
+      // no defaults available — create empty
+      await fs.mkdir(userSkills, { recursive: true });
+    }
+  }
+
+  return `storage/users/${userId}/${SKILLS_DIR}`;
+}

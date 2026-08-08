@@ -283,7 +283,7 @@ const RESPONSE_SCHEMA = {
       type: 'object',
       description: 'Opcional. Si la IA debe generar/editar un archivo, incluye este objeto',
       properties: {
-        type: { type: 'string', enum: ['xlsx', 'docx', 'pptx', 'png', 'pdf'] },
+        type: { type: 'string', enum: ['xlsx', 'docx', 'pptx'] },
         data: { type: 'object', additionalProperties: true },
         filename: { type: 'string' },
         editPath: { type: 'string' },

@@ -10,10 +10,10 @@
 2. **Selector de Chats por Area:** La barra superior (Topbar) contiene un dropdown centrado que muestra solo los chats del area activa. Al pasar el cursor sobre un chat aparece un menu de 3 puntos para renombrar o eliminar (no se puede eliminar el ultimo chat de un area).
 3. **Proveedores de IA Intercambiables:** Tasky soporta **OpenRouter** y **NVIDIA NIM** de primera clase. Desde un unico modal flotante (`ModelSelectorModal`) el usuario configura API keys, carga modelos, cambia el proveedor activo y el modelo en uso sin reiniciar el servidor. La preferencia se persiste en `storage/user-config.json` (`provider`, `model` y keys independientes por proveedor).
 4. **Generacion Automatica de Archivos:** A traves de instrucciones en el chat, la IA es capaz de crear de forma autonomamente documentos complejos como:
-   - Hojas de calculo (`.xlsx`)
-   - Documentos de Word (`.docx`)
-   - Presentaciones PowerPoint (`.pptx`)
-   - Graficos, diagramas y tablas en imagen (`.png`)
+   - Hojas de calculo (`.xlsx`) con charts nativos editables
+   - Documentos de Word (`.docx`) con TOC, tablas, footer numerado
+   - Presentaciones PowerPoint (`.pptx`) 16:9 con themes y layouts profesionales
+   Toda generacion corre en un microservicio Python (FastAPI + python-docx/openpyxl/python-pptx) que se ejecuta como co-proceso en el mismo container Docker.
 5. **Explorador de Archivos Integrado:** Interfaz grafica (Finder-style) para subir, descargar y organizar los archivos generados o manuales de cada proyecto.
 6. **Contexto IA Enriquecido:** El backend extrae texto plano de archivos de contexto (`.md`, `.txt`, `.json`, `.csv`, `.pdf`, `.docx`,codigo fuente en multiples lenguajes, etc.) mediante `readContextFile` (usando `pdfjs-dist` para PDF y `mammoth` para DOCX). El selector de archivos relevantes hace content-scoring sobre los primeros 500 caracteres de cada archivo, no solo match por nombre.
 7. **Gestion de Reglas Avanzada:** El `SidePanel` incluye menu kebab por regla para editar/eliminar. El parser `rules-parser.ts` soporta tags `enabled` / `disabled` explicitos además del toggle por checkbox.
@@ -36,7 +36,14 @@ task/
 |   |   |   +-- llm-client.js         # Cliente unificado OpenRouter / NVIDIA
 |   |   |   +-- config.js             # Gestion de configuracion del usuario (API key UI)
 |   |   |   +-- tools.js              # Herramientas function-calling para el LLM
-|   |   |   +-- generators/           # Scripts generadores de archivos binarios
+|   |   |   +-- generators/           # Fachada de generacion (delega al docengine Python)
+|   |   |   |   +-- index.js          # Re-export de {generateFile, editFile, readFileStructure, detectFileType}
+|   |   |   |   +-- docengine.js      # Cliente HTTP al microservicio Python (POST /api/v1/generate|edit/<fmt>)
+|   |   |   +-- docengine/            # Microservicio Python (FastAPI + uvicorn)
+|   |   |       +-- main.py           # Endpoints: POST /api/v1/{generate,edit}/{docx,xlsx,pptx}
+|   |   |       +-- builders/         # Builders por formato (docx_builder, xlsx_builder, pptx_builder + editores)
+|   |   |       +-- schemas/          # Pydantic v2: DocxPayload, XlsxPayload, PptxPayload
+|   |   |       +-- utils/            # Helpers (styles, colores, etc.)
 |   |   +-- tests/                    # Tests unitarios (node:test)
 |   |   |   +-- storage.test.js       # Tests de storage.js
 |   |   |   +-- tools.test.js         # Tests de tools.js
@@ -142,6 +149,94 @@ interface Area {
 - **Historial** se almacena en `history/areas/{areaId}/files/`
 - **Chat logs** se almacenan en `chat/areas/{areaId}/{chatId}.jsonl`
 - El prompt del sistema inyecta las reglas del area activa, no las globales
+
+---
+
+## Generacion de Archivos (docengine)
+
+Cuando la IA responde con un campo `fileGenerated` en el chat, el backend delega la construccion del archivo binario (`.docx`/`.xlsx`/`.pptx`) a un **microservicio Python** (FastAPI + uvicorn) que corre como co-proceso dentro del mismo container Docker. Toda la generacion 100% Python — los viejos generadores JS fueron eliminados.
+
+### Pipeline de generacion
+
+```
+Chat (LLM)                       Backend (Node)                   Microservicio (Python)
+┌──────────────┐                 ┌────────────────────┐           ┌──────────────────────┐
+│ LLM responde │ ──────────────► │ parseStructured    │           │ POST /api/v1/         │
+│ JSON con     │  POST /chat    │ Response extrae    │           │   generate/{fmt}      │
+│ fileGenerated│                 │ fileGenerated      │ ────────► │ ─────────────────────►│
+│ {type, data, │                 │ → generateFile()   │  body:    │ pydantic valida       │
+│  filename}   │                 │   (docengine.js)   │  data JSON│ schemas/<Fmt>Payload │
+└──────────────┘                 │   POST → Python    │           │ builder genera bytes  │
+                                 │ fs.writeFile       │ ◄──────── │ → StreamingResponse   │
+                                 │ a files/generated  │  binario  └──────────────────────┘
+                                 └────────────────────┘
+```
+
+### Componentes
+
+| Capa | Archivo | Rol |
+|------|---------|-----|
+| Node — fachada | `apps/api/src/generators/index.js` | Re-exporta `{generateFile, editFile, readFileStructure, detectFileType}` (mismo contrato publico que antes). |
+| Node — cliente HTTP | `apps/api/src/generators/docengine.js` | POST a `DOC_ENGINE_URL` (default `http://127.0.0.1:8788`) con timeout 60s. Si `data` es undefined/null envia `{}` como fallback. |
+| Node — auto-gen en chat | `apps/api/src/index.js` (~line 1517) | Despues de parsear la respuesta del LLM, si hay `fileGenerated` llama a `generateFile()` automaticamente y devuelve `{name, url, type}` al frontend. |
+| Python — entrypoint | `apps/api/docengine/main.py` | FastAPI con endpoints `POST /api/v1/generate/{docx,xlsx,pptx}` y `POST /api/v1/edit/{...}`. Sirve `StreamingResponse` con el binario. |
+| Python — schemas | `apps/api/docengine/schemas/*.py` | Pydantic v2 `BaseModel` con `ConfigDict(extra="allow")`. Discriminated unions para `Section` (docx) y `Slide` (pptx). |
+| Python — builders | `apps/api/docengine/builders/{docx,xlsx,pptx}_builder.py` | Logica de construccion con `python-docx`/`openpyxl`/`python-pptx`. |
+| Python — entrypoint container | `docker/entrypoint.mjs` | Levanta 3 procesos en el container: api (8787), web (3000), doc-engine (8788). Si uno muere, el container se reinicia. |
+
+### Contrato `fileGenerated` (lo que el LLM debe devolver)
+
+```json
+{
+  "content": "...",
+  "meta": { "complete": true, "taskPath": null, "summary": "..." },
+  "fileGenerated": {
+    "type": "docx | xlsx | pptx",
+    "filename": "informe.docx",
+    "data": { /* payload completo del formato — ver schemas en storage/defaults/skills/generators/ */ }
+  }
+}
+```
+
+**El contenido del documento va SIEMPRE dentro del campo `data`**, nunca bajo `schema`, `content`, `document` u otra clave.
+
+### Skills de generacion (referencia para el LLM)
+
+`storage/defaults/skills/generators/*.md` contiene referencias detalladas (schemas completos, ejemplos, reglas) que la IA consulta indirectamente: el system prompt (en `index.js`) incluye un **Quick Reference** con los campos clave y apunta a las rutas completas. El backend actualmente **no inline** el contenido completo de los `.md` en el prompt — el LLM solo tiene el resumen inline.
+
+| Archivo | Formato | Cubre |
+|---------|---------|-------|
+| `xlsx.md` | xlsx | sheets, headers, charts nativos, formulas, freeze, sumario, conditional formatting |
+| `docx.md` | docx | sections (heading/paragraph/bullets/table/quote/code/image/hyperlink/toc), footer con nº de pagina |
+| `pptx.md` | pptx | slides 16:9 con layouts (title/content/two_columns/image_left/image_right/table/chart/quote/closing/custom) |
+
+`storage/users/{user}/skills/generators/` se copia desde `defaults` la primera vez que el usuario accede (funcion `getUserSkillsPath` en `storage.js`). Las copias solo se refrescan si el directorio del usuario no existe; cambios posteriores a `defaults/` requieren borrar `storage/users/{user}/skills/` manualmente.
+
+### Nota de prompt engineering (bug historico)
+
+En una version anterior del system prompt, la palabra "schema" se usaba repetidamente para describir la estructura del documento ("complete schemas", "full XLSX schema", etc.). Con `glm-5.2` (NVIDIA NIM), el modelo interpretaba esa terminologia como **nombre de clave** y devolvia el contenido del documento bajo `schema` en lugar de `data`. El backend esperaba `fileGenerated.data` → undefined → `{}` → archivos en blanco (byte-identicos a un payload vacio).
+
+El prompt ahora usa terminologia neutra y declara explicitamente:
+
+> The document content MUST go inside the `data` field of `fileGenerated`. Do NOT use any other field name.
+
+Regla practica para futuros cambios al prompt: **nunca uses "schema"/"schemas" como sustantivo del documento** cuando hables del payload que el LLM debe generar. Usa "payload", "contenido", "estructura", "datos" o el nombre del campo (`data`).
+
+### Edicion de archivos existentes
+
+Adicional a `fileGenerated`, el LLM puede devolver `editPath` + `editChanges` para modificar un archivo ya generado:
+
+```json
+{
+  "fileGenerated": {
+    "type": "docx",
+    "editPath": "files/generated/informe.docx",
+    "editChanges": { "template": { "FECHA": "2026-08-08" } }
+  }
+}
+```
+
+Estrategias soportadas (ver detalle en los skills): `template` (reemplaza tokens `{{PLACEHOLDER}}`) o `replace` (lista `[{find, replace}]`).
 
 ---
 
