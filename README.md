@@ -13,7 +13,7 @@
    - Hojas de calculo (`.xlsx`) con charts nativos editables
    - Documentos de Word (`.docx`) con TOC, tablas, footer numerado
    - Presentaciones PowerPoint (`.pptx`) 16:9 con themes y layouts profesionales
-   Toda generacion corre en un microservicio Python (FastAPI + python-docx/openpyxl/python-pptx) que se ejecuta como co-proceso en el mismo container Docker.
+   Toda generacion corre en un CLI Python (`python-docx`/`openpyxl`/`python-pptx`) que el backend Node lanza por proceso.
 5. **Explorador de Archivos Integrado:** Interfaz grafica (Finder-style) para subir, descargar y organizar los archivos generados o manuales de cada proyecto.
 6. **Contexto IA Enriquecido:** El backend extrae texto plano de archivos de contexto (`.md`, `.txt`, `.json`, `.csv`, `.pdf`, `.docx`,codigo fuente en multiples lenguajes, etc.) mediante `readContextFile` (usando `pdfjs-dist` para PDF y `mammoth` para DOCX). El selector de archivos relevantes hace content-scoring sobre los primeros 500 caracteres de cada archivo, no solo match por nombre.
 7. **Gestion de Reglas Avanzada:** El `SidePanel` incluye menu kebab por regla para editar/eliminar. El parser `rules-parser.ts` soporta tags `enabled` / `disabled` explicitos además del toggle por checkbox.
@@ -37,10 +37,9 @@ task/
 |   |   |   +-- config.js             # Gestion de configuracion del usuario (API key UI)
 |   |   |   +-- tools.js              # Herramientas function-calling para el LLM
 |   |   |   +-- generators/           # Fachada de generacion (delega al docengine Python)
-|   |   |   |   +-- index.js          # Re-export de {generateFile, editFile, readFileStructure, detectFileType}
-|   |   |   |   +-- docengine.js      # Cliente HTTP al microservicio Python (POST /api/v1/generate|edit/<fmt>)
-|   |   |   +-- docengine/            # Microservicio Python (FastAPI + uvicorn)
-|   |   |       +-- main.py           # Endpoints: POST /api/v1/{generate,edit}/{docx,xlsx,pptx}
+|   |   |   +-- docengine.js      # Lanza el CLI Python (apps/api/docengine/cli.py) por proceso
+|   |   |   +-- docengine/            # CLI Python (generacion/edicion de archivos)
+|   |   |       +-- cli.py            # Entrypoint CLI: stdin JSON -> stdout binario
 |   |   |       +-- builders/         # Builders por formato (docx_builder, xlsx_builder, pptx_builder + editores)
 |   |   |       +-- schemas/          # Pydantic v2: DocxPayload, XlsxPayload, PptxPayload
 |   |   |       +-- utils/            # Helpers (styles, colores, etc.)
@@ -154,35 +153,33 @@ interface Area {
 
 ## Generacion de Archivos (docengine)
 
-Cuando la IA responde con un campo `fileGenerated` en el chat, el backend delega la construccion del archivo binario (`.docx`/`.xlsx`/`.pptx`) a un **microservicio Python** (FastAPI + uvicorn) que corre como co-proceso dentro del mismo container Docker. Toda la generacion 100% Python — los viejos generadores JS fueron eliminados.
+Cuando la IA responde con un campo `fileGenerated` en el chat, el backend lanza el **CLI Python** (`apps/api/docengine/cli.py`) por proceso: escribe el payload JSON en stdin, el CLI valida con pydantic y construye el binario (`python-docx`/`openpyxl`/`python-pptx`), y devuelve el binario por stdout. Node lo escribe a `files/generated/`. Generacion 100% Python, sin microservicio HTTP.
 
 ### Pipeline de generacion
 
 ```
-Chat (LLM)                       Backend (Node)                   Microservicio (Python)
+Chat (LLM)                       Backend (Node)                   CLI (Python)
 ┌──────────────┐                 ┌────────────────────┐           ┌──────────────────────┐
-│ LLM responde │ ──────────────► │ parseStructured    │           │ POST /api/v1/         │
-│ JSON con     │  POST /chat    │ Response extrae    │           │   generate/{fmt}      │
-│ fileGenerated│                 │ fileGenerated      │ ────────► │ ─────────────────────►│
-│ {type, data, │                 │ → generateFile()   │  body:    │ pydantic valida       │
-│  filename}   │                 │   (docengine.js)   │  data JSON│ schemas/<Fmt>Payload │
-└──────────────┘                 │   POST → Python    │           │ builder genera bytes  │
-                                 │ fs.writeFile       │ ◄──────── │ → StreamingResponse   │
-                                 │ a files/generated  │  binario  └──────────────────────┘
-                                 └────────────────────┘
+│ LLM responde │ ──────────────► │ parseStructured    │           │ cli.py generate <fmt> │
+│ JSON con     │  POST /chat    │ Response extrae    │           │ ─────────────────────►│
+│ fileGenerated│                 │ fileGenerated      │ ────────► │ stdin: payload JSON    │
+│ {type, data, │                 │ → generateFile()   │  spawn    │ pydantic valida       │
+│  filename}   │                 │   (docengine.js)   │  child    │ schemas/<Fmt>Payload │
+└──────────────┘                 │ fs.writeFile       │ ◄──────── │ builder genera bytes  │
+                                 │ a files/generated  │  stdout   │ → stdout binario       │
+                                 └────────────────────┘           └──────────────────────┘
 ```
 
 ### Componentes
 
 | Capa | Archivo | Rol |
 |------|---------|-----|
-| Node — fachada | `apps/api/src/generators/index.js` | Re-exporta `{generateFile, editFile, readFileStructure, detectFileType}` (mismo contrato publico que antes). |
-| Node — cliente HTTP | `apps/api/src/generators/docengine.js` | POST a `DOC_ENGINE_URL` (default `http://127.0.0.1:8788`) con timeout 60s. Si `data` es undefined/null envia `{}` como fallback. |
+| Node — cliente CLI | `apps/api/src/generators/docengine.js` | Lanza `python3 cli.py generate|edit <fmt>` con stdin=JSON y timeout 60s. Lee el binario de stdout y lo escribe a `files/generated/`. |
 | Node — auto-gen en chat | `apps/api/src/index.js` (~line 1517) | Despues de parsear la respuesta del LLM, si hay `fileGenerated` llama a `generateFile()` automaticamente y devuelve `{name, url, type}` al frontend. |
-| Python — entrypoint | `apps/api/docengine/main.py` | FastAPI con endpoints `POST /api/v1/generate/{docx,xlsx,pptx}` y `POST /api/v1/edit/{...}`. Sirve `StreamingResponse` con el binario. |
+| Python — CLI | `apps/api/docengine/cli.py` | Entrypoint CLI. Subcomandos `generate <fmt>` y `edit <fmt>`. Lee JSON de stdin, emite binario por stdout, errores JSON por stderr. |
 | Python — schemas | `apps/api/docengine/schemas/*.py` | Pydantic v2 `BaseModel` con `ConfigDict(extra="allow")`. Discriminated unions para `Section` (docx) y `Slide` (pptx). |
 | Python — builders | `apps/api/docengine/builders/{docx,xlsx,pptx}_builder.py` | Logica de construccion con `python-docx`/`openpyxl`/`python-pptx`. |
-| Python — entrypoint container | `docker/entrypoint.mjs` | Levanta 3 procesos en el container: api (8787), web (3000), doc-engine (8788). Si uno muere, el container se reinicia. |
+| Python — entrypoint container | `docker/entrypoint.mjs` | Levanta 2 procesos en el container: api (8787), web (3000). El CLI Python se lanza on-demand por cada generacion. |
 
 ### Contrato `fileGenerated` (lo que el LLM debe devolver)
 

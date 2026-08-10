@@ -84,7 +84,6 @@ start(
     PORT: process.env.PORT || '8787',
     STORAGE_ROOT: process.env.STORAGE_ROOT || '/app/storage',
     CORS_ORIGIN: process.env.CORS_ORIGIN || '',
-    DOC_ENGINE_URL: process.env.DOC_ENGINE_URL || 'http://127.0.0.1:8788',
   }
 );
 
@@ -99,17 +98,5 @@ start(
     PORT: process.env.WEB_PORT || '3000',
     HOSTNAME: '0.0.0.0',
     NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8787',
-  }
-);
-
-console.log('[entrypoint] starting doc-engine...');
-start(
-  'doc-engine',
-  'python3',
-  ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8788', '--no-access-log'],
-  '/app/apps/api/docengine',
-  {
-    PYTHONPATH: '/app/apps/api/docengine:/opt/docsite',
-    PYTHONUNBUFFERED: '1',
   }
 );

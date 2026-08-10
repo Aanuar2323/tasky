@@ -39,7 +39,6 @@ import {
   safeJoin,
   AREA_RULES_FILE,
   AREA_SUMMARY_FILE,
-  getUserSkillsPath,
 } from './storage.js';
 
 import {
@@ -53,7 +52,7 @@ import {
   isConfigured,
 } from './llm-client.js';
 
-import { generateFile, readFileStructure, editFile, detectFileType } from './generators/index.js';
+import { generateFile, editFile, detectFileType } from './generators/docengine.js';
 
 /**
  * Extrae el texto de un PDF usando pdfjs-dist (ESM nativo).
@@ -162,25 +161,69 @@ async function ensureRoot() {
 }
 
 /**
- * Extrae metadatos especiales del mensaje del asistente.
- *
- * El asistente puede incluir una línea al final con el formato:
- *   TASK_APP_META: {"complete":true,"taskPath":"tasks/inbox/x.md","summary":"..."}
- *
- * Esta función separa ese metadato del texto visible para el usuario.
- *
- * @param {string} text - Texto completo devuelto por la IA
- * @returns {{cleanText: string, meta: Object|null}} Texto limpio y metadato parseado
+ * Sanitiza raw output de modelos que rompen JSON:
+ *  - elimina tokens extraños tipo `<]minimax[>`, `<]tag[>`
+ *  - elimina chars de control no escapables
+ *  - reemplaza double-escape común: `\"` después de `:` ya escaped → `"` (MiniMax bug)
+ * No toca el contenido válido del JSON, solo prepara para reintentar JSON.parse.
+ */
+function sanitizeRawOutput(s) {
+  if (!s) return s;
+  return s
+    .replace(/<\][a-zA-Z0-9_-]*\[>/g, '')        // tokens brand-like
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '') // chars de control no imprimibles
+    .replace(/\\+"/g, '"')                        // \\\\" -> " (over-escape de comillas)
+    .trim();
+}
+
+/**
+ * Extrae el primer bloque JSON balanceado { ... } de s, ignorando texto
+ * antes/después (mensaje markdown, "📎 Archivo...", etc.).
+ * Si no encuentra balance, retorna null.
+ */
+function extractBalancedJson(s) {
+  const start = s.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) { esc = false; }
+      else if (c === '\\') { esc = true; }
+      else if (c === '"') { inStr = false; }
+    } else {
+      if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) return s.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extrae el contenido del primer fenced code block ```json ... ``` o ``` ... ```.
+ * Retorna null si no hay fence.
+ */
+function extractFencedJson(s) {
+  const m = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  return m ? m[1].trim() : null;
+}
+
+/**
+ * Legacy: extrae metadato TASK_APP_META: {...} del final del texto.
  */
 function parseMetaFromAssistant(text) {
   const safeText = typeof text === 'string' ? text : '';
   const marker = 'TASK_APP_META:';
   const idx = safeText.lastIndexOf(marker);
   if (idx === -1) return { cleanText: safeText, meta: null };
-
   const metaStr = safeText.slice(idx + marker.length).trim();
   const cleanText = safeText.slice(0, idx).trim();
-
   try {
     const meta = JSON.parse(metaStr);
     return { cleanText, meta };
@@ -190,29 +233,171 @@ function parseMetaFromAssistant(text) {
 }
 
 /**
- * Parsea la respuesta estructurada del LLM (JSON schema strict).
- * El LLM ahora responde con un JSON que tiene {content, meta, fileGenerated?}
- * en vez de "markdown + TASK_APP_META: {...}".
+ * Best-effort: extrae `fileGenerated: {...}` de un string corrupto.
+ * Devuelve el objeto parseado o null. Acepta que el snippet sea incompleto.
+ */
+function extractFileGeneratedBestEffort(s) {
+  const m = s.match(/"fileGenerated"\s*:\s*(\{[\s\S]*?\})\s*[,\}]/);
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch { return null; }
+}
+
+/**
+ * Parsea la respuesta del LLM con cascada defensiva:
+ *  1. JSON.parse directo
+ *  2. Bloque fenced ```json ... ```
+ *  3. JSON balanceado ignorando texto antes/después
+ *  4. Sanitizar + reintentar JSON.parse
+ *  5. extractFileGeneratedBestEffort (última opción)
+ *  6. Legacy TASK_APP_META (meta only, fileGenerated=null)
  *
- * @param {string} raw — texto crudo de la respuesta del LLM
- * @returns {{content: string, meta: object|null, fileGenerated: object|null, parseError: string|null}}
+ * @param {string} raw
+ * @returns {{content:string, meta:object|null, fileGenerated:object|null, parseError:string|null, parseWarnings:string[]}}
  */
 function parseStructuredResponse(raw) {
+  const warnings = [];
   if (typeof raw !== 'string' || !raw.trim()) {
-    return { content: '', meta: null, fileGenerated: null, parseError: 'empty_response' };
+    return { content: '', meta: null, fileGenerated: null, parseError: 'empty_response', parseWarnings: warnings };
   }
+
+  // 1. JSON directo
   try {
     const obj = JSON.parse(raw);
     return {
-      content: typeof obj.content === 'string' ? obj.content : '',
+      content: typeof obj.content === 'string' ? obj.content : (typeof obj === 'string' ? obj : ''),
       meta: obj.meta && typeof obj.meta === 'object' ? obj.meta : null,
       fileGenerated: obj.fileGenerated && typeof obj.fileGenerated === 'object' ? obj.fileGenerated : null,
       parseError: null,
+      parseWarnings: warnings,
     };
-  } catch {
-    const { cleanText, meta } = parseMetaFromAssistant(raw);
-    return { content: cleanText, meta, fileGenerated: null, parseError: 'legacy_fallback' };
+  } catch (e) { warnings.push(`step1_json_parse:${e.message}`); }
+
+  // 2. Fenced
+  const fenced = extractFencedJson(raw);
+  if (fenced) {
+    try {
+      const obj = JSON.parse(fenced);
+      warnings.push('step2_fenced_json_recovered');
+      return {
+        content: typeof obj.content === 'string' ? obj.content : '',
+        meta: obj.meta && typeof obj.meta === 'object' ? obj.meta : null,
+        fileGenerated: obj.fileGenerated && typeof obj.fileGenerated === 'object' ? obj.fileGenerated : null,
+        parseError: null,
+        parseWarnings: warnings,
+      };
+    } catch (e) { warnings.push(`step2_fenced_parse:${e.message}`); }
   }
+
+  // 3. JSON balanceado (ignora texto antes/después)
+  const balanced = extractBalancedJson(raw);
+  if (balanced) {
+    try {
+      const obj = JSON.parse(balanced);
+      warnings.push('step3_balanced_json_recovered');
+      return {
+        content: typeof obj.content === 'string' ? obj.content : '',
+        meta: obj.meta && typeof obj.meta === 'object' ? obj.meta : null,
+        fileGenerated: obj.fileGenerated && typeof obj.fileGenerated === 'object' ? obj.fileGenerated : null,
+        parseError: null,
+        parseWarnings: warnings,
+      };
+    } catch (e) { warnings.push(`step3_balanced_parse:${e.message}`); }
+  }
+
+  // 4. Sanitizar + reintentar
+  const cleaned = sanitizeRawOutput(raw);
+  if (cleaned !== raw) {
+    const cleanedBalanced = extractBalancedJson(cleaned) ?? cleaned;
+    try {
+      const obj = JSON.parse(cleanedBalanced);
+      warnings.push('step4_sanitized_recovered');
+      return {
+        content: typeof obj.content === 'string' ? obj.content : '',
+        meta: obj.meta && typeof obj.meta === 'object' ? obj.meta : null,
+        fileGenerated: obj.fileGenerated && typeof obj.fileGenerated === 'object' ? obj.fileGenerated : null,
+        parseError: null,
+        parseWarnings: warnings,
+      };
+    } catch (e) { warnings.push(`step4_sanitized_parse:${e.message}`); }
+  }
+
+  // 5. fileGenerated best-effort (al menos salvar el archivo si el resto es basura)
+  const fg = extractFileGeneratedBestEffort(cleaned);
+  if (fg) {
+    warnings.push('step5_file_generated_best_effort');
+    const { cleanText, meta } = parseMetaFromAssistant(raw);
+    return {
+      content: cleanText || raw.slice(0, 2000),
+      meta,
+      fileGenerated: fg,
+      parseError: 'partial_recovery',
+      parseWarnings: warnings,
+    };
+  }
+
+  // 6. Legacy fallback final (meta only)
+  warnings.push('step6_legacy_fallback');
+  const { cleanText, meta } = parseMetaFromAssistant(raw);
+  return {
+    content: cleanText || raw,
+    meta,
+    fileGenerated: null,
+    parseError: 'legacy_fallback',
+    parseWarnings: warnings,
+  };
+}
+
+/**
+ * Normaliza `fileGenerated` antes de pasarlo al CLI Python.
+ * Repara errores comunes de modelos que no respetan el schema:
+ *  - `data` como string JSON → objeto
+ *  - `type` faltante → inferir por extensión de filename
+ *  - `filename` faltante → nanoid + extensión
+ * Devuelve { fg, fixes: string[] }.
+ */
+function normalizeFileGenerated(fg) {
+  if (!fg || typeof fg !== 'object') return { fg: null, fixes: [] };
+  const fixes = [];
+  const out = { ...fg };
+
+  // type inferido por extensión de filename o editPath
+  const EXT = { docx: 'docx', xlsx: 'xlsx', pptx: 'pptx' };
+  if (!out.type || !EXT[out.type]) {
+    const probe = out.filename || out.editPath || '';
+    const ext = String(probe).toLowerCase().match(/\.(\w+)$/)?.[1];
+    if (ext && EXT[ext]) {
+      out.type = EXT[ext];
+      fixes.push(`type_inferred_from_extension:${ext}`);
+    }
+  }
+
+  // data como string → parsear
+  if (out.data && typeof out.data === 'string') {
+    try {
+      out.data = JSON.parse(out.data);
+      fixes.push('data_string_parsed_to_object');
+    } catch {
+      fixes.push('data_string_unparseable_left_as_is');
+    }
+  }
+
+  // filename con nanoid si falta
+  if (!out.filename) {
+    const ext = EXT[out.type] || 'bin';
+    out.filename = `${out.type || 'file'}-${nanoid(8)}.${ext}`;
+    fixes.push('filename_generated');
+  }
+
+  // filename sin extensión correcta → agregar
+  if (out.type && EXT[out.type]) {
+    const expected = EXT[out.type];
+    if (!String(out.filename).toLowerCase().endsWith(`.${expected}`)) {
+      out.filename = `${out.filename}.${expected}`;
+      fixes.push('filename_extension_appended');
+    }
+  }
+
+  return { fg: out, fixes };
 }
 
 /**
@@ -1432,7 +1617,6 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
     : '';
 
   // Construir el prompt del sistema con contexto del proyecto
-  const skillsPath = await getUserSkillsPath(USER_ID);
   const system = {
     role: 'system',
     content:
@@ -1459,52 +1643,96 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
         ? `USER ATTACHMENTS (${attachmentBlocks.length} file(s) — analyze them as requested):\n${attachmentBlocks.join('\n')}\n\n`
         : '') +
       `LAYER 3 (QA/testing):\n${layer3}\n\n` +
-      `You must respond with a JSON object that matches this exact schema:\n` +
+      `OUTPUT FORMAT (CRITICAL — must follow exactly):\n` +
+      `Your ENTIRE response must be a SINGLE, VALID, COMPACT JSON object parseable by JSON.parse() with NO preprocessing. No prose, no markdown, no code fences.\n\n` +
+      `Required JSON shape:\n` +
       `{\n` +
       `  "content": "<markdown visible for the user, never empty>",\n` +
       `  "meta": { "complete": <bool>, "taskPath": <string|null>, "summary": "<short summary>" },\n` +
-      `  "fileGenerated": <optional, only when user asks to create/edit a file>\n` +
+      `  "fileGenerated": <optional object, only when user asks to create/edit a file>\n` +
       `}\n\n` +
-      `Rules:\n` +
-      `- "content" is REQUIRED and must never be empty. Put the user-facing markdown here.\n` +
-      `- "meta.complete" should be true only if the user's request is fully solved.\n` +
-      `- "meta.taskPath" should be the active task path if you are marking it complete, else null.\n` +
-      `- "meta.summary" is a one-line summary of your response.\n` +
-      `- "fileGenerated" is OPTIONAL. Include it only when the user asks to create or edit a file (Excel/Word/PowerPoint). Same structure as before.\n\n` +
+      `Strict rules for the JSON output:\n` +
+      `- Output ONLY raw JSON. Start with \\u007B, end with \\u007D. NO json code fences, NO "---" separators, NO emojis like attachment-mark before/after.\n` +
+      `- If you want to mention the file in content, just write a sentence. DO NOT paste the JSON payload there and DO NOT add anything after the closing brace.\n` +
+      `- Strings inside JSON use double quotes. Escape inner quotes as a single backslash-quote — NEVER double-escape (no backslash-backslash-quote).\n` +
+      `- Compact JSON: no extra whitespace, no comments, no line breaks INSIDE string values.\n` +
+      `- "content" is REQUIRED string (markdown user-visible, never empty).\n` +
+      `- "meta.complete" = true only if request is fully solved.\n` +
+      `- "meta.taskPath" = active task path if you are marking it complete, else null.\n` +
+      `- "meta.summary" = one-line summary of your response.\n` +
+      `- "fileGenerated" is OPTIONAL. Include ONLY when user asks to create or edit a file (Excel/Word/PowerPoint).\n\n` +
       `FILE GENERATION (only when user requests a file):\n` +
-      `Files are generated by a Python service (python-docx / openpyxl / python-pptx).\n\n` +
-      `**CRITICAL**: The document content MUST go inside the \`data\` field of \`fileGenerated\`. Do NOT use any other field name. The response shape is:\n` +
+      `Files are generated by a Python CLI (apps/api/docengine/cli.py using python-docx / openpyxl / python-pptx). The CLI reads JSON from stdin and writes the binary to stdout.\n\n` +
+      `**CRITICAL**: The document content MUST go inside the "data" field of "fileGenerated". Do NOT use any other field name. Response shape:\n` +
       `"fileGenerated": {"type":"docx|xlsx|pptx", "filename":"x.docx", "data": { ...full document content... }}\n` +
-      `Everything that describes the document (title, sections, slides, sheets, etc.) goes INSIDE \`data\`. Never under "schema", "content", "document", or any other key.\n\n` +
-      `Quick reference (what goes INSIDE \`data\` — Python engine payloads):\n` +
-      `XLSX \`data\`: {filename, theme{primary_color,accent_color,header_fill,header_font_color,alt_row_fill,font_family}, creator, company, sheets[]}. Each sheet: {name, title, headers[], rows[][], column_widths[], number_formats{}, merge_cells[], freeze{rows,cols}, chart{type:bar|line|pie|scatter, title, labels[], series[{name,values[]}], anchor_cell, show_legend}, summary_row{label,formula,fill_color}, conditional_formatting[], data_validations[], tab_color, auto_filter}. Formulas as strings starting with "=". Charts are NATIVE and editable in Excel.\n` +
-      `DOCX \`data\`: {filename, theme{primary_color,dark_color,font_family}, title, subtitle, meta{author,company,subject,title}, page{orientation,margins}, sections[]}. Each section has a 'type': heading{text,level}, paragraph{text,bold,italic,font_size,color,align}, bullets{items[]}, numbered{items[]}, table{headers[],rows[][],style}, quote{text,author}, code{text}, image{image_base64|image_data,width,height,caption}, hyperlink{text,url}, toc{caption}, divider, page_break. Tables use Table Grid style with banded rows. Footer includes page number. TOC requires Word "Update field".\n` +
-      `PPTX \`data\`: {filename, theme{primary_color,secondary_color,accent_color,background_color,dark_color,font_family}, title, author, company, subject, slides[]}. Each slide has a 'layout': title{title,subtitle}, content{title,bullets[],paragraph}, two_columns{title,left_column[],right_column[]}, image_left{title,image_base64|image_data,bullets[]}, image_right{...}, table{title,headers[],rows[][]}, chart{title,chart{type:bar|line|pie|scatter, title, labels[], series[{name,values[]}], show_legend}}, quote{text,author}, section_header{title}, closing{title,subtitle}, custom{objects[]}. Custom objects: {type:text|shape|image|chart|table, x,y,w,h, ...}. 16:9 layout, theme colors applied.\n\n` +
-      `Reference files at: ${skillsPath}\n` +
-      `- ${skillsPath}/xlsx.md — full XLSX payload reference with chart/freeze/summary examples.\n` +
-      `- ${skillsPath}/docx.md — full DOCX payload reference with TOC/table/footer examples.\n` +
-      `- ${skillsPath}/pptx.md — full PPTX payload reference with chart/two_columns/table examples.\n\n` +
+      `Everything that describes the document (title, sections, slides, sheets, etc.) goes INSIDE "data". Never under "schema", "content", "document".\n` +
+      `For edits: {"type":"...", "editPath":"files/generated/x.docx", "editChanges":{...}, "filename":"out.docx"}\n\n` +
+      `Quick reference (what goes INSIDE "data" — Python CLI payload schema). Send COMPLETE, COMPACT JSON with REAL user content — never placeholders:\n\n` +
+      `=== XLSX ===\n` +
+      `TOP: {filename, theme{primary_color,accent_color,header_fill,header_font_color,alt_row_fill,font_family}, creator, company, sheets[]}\n` +
+      `SHEET: {name:"Ventas", title:"Reporte", headers:["Mes","Total"], rows:[["Ene",1000],["Feb",2000]], column_widths:[15,12], number_formats:{"B":"#,##0"}, merge_cells:["A1:B1"], freeze{rows:1,cols:0,top_left_cell:"A2"}, chart{type:"bar|line|pie|scatter", title, labels:["Ene","Feb"], series:[{name:"2024",values:[1000,2000]}], anchor_cell:"E2", width:15, height:8, show_legend:true}, summary_row{label:"Total",formula:"SUM",fill_color:"#1E293B"}, conditional_formatting[{type:"cell_is",operator:"greaterThan",formula:["1000"],fill_color:"#22C55E",font_color:"#FFFFFF"}], data_validations[{cells:"A1:A10",type:"whole",operator:"between",formula1:"1",formula2:"100",allow_blank:true}], tab_color:"#2563EB", auto_filter:true}\n` +
+      `NOTE: Formulas as strings starting with "=". Charts are NATIVE and editable in Excel. Colors hex #RRGGBB.\n` +
+      `EXAMPLE: {"filename":"ventas.xlsx","sheets":[{"name":"Ventas","headers":["Mes","Total"],"rows":[["Ene",1500],["Feb",2300]],"summary_row":{"label:"Total","formula":"SUM"}}]}\n\n` +
+      `=== DOCX ===\n` +
+      `TOP: {filename, theme{primary_color,dark_color,font_family}, title, subtitle, meta{author,company,title,subject}, page{orientation:"portrait|landscape",margins{}}, sections[]}\n` +
+      `SECTION types (use field "type"):\n` +
+      `  heading{text:"Chapter 1",level:1}\n` +
+      `  paragraph{text:"Body text. Supports markdown **bold** if needed.",bold:false,italic:false,font_size:11,color:"#0F172A",align:"left|center|right|justify"}\n` +
+      `  bullets{items:["Point A","Point B"]}\n` +
+      `  numbered{items:["First","Second"]}\n` +
+      `  table{headers:["Name","Amount"],rows:[["Alice",100],["Bob",200]],style:"Table Grid"}\n` +
+      `  quote{text:"A wise quote.",author:"Einstein"}\n` +
+      `  code{text:"print('hello')"}\n` +
+      `  image{image_base64:"data:image/png;base64,..." OR image_data:"base64string",width:5,height:3,caption:"Fig 1"}\n` +
+      `  hyperlink{text:"Click here",url:"https://example.com"}\n` +
+      `  toc{caption:"Contents"}\n` +
+      `  divider{}\n` +
+      `  page_break{}\n` +
+      `NOTE: Tables use Table Grid style with banded rows. Footer includes page number. TOC requires Word "Update field".\n` +
+      `EXAMPLE: {"filename":"reporte.docx","title":"Informe Anual","sections":[{"type":"heading","text":"Resumen","level":1},{"type":"paragraph","text:"Esta es la introduccion del documento."},{"type":"bullets","items":["Punto uno","Punto dos"]},{"type":"table","headers":["Producto","Precio"],"rows":[["Cafe",3.5],["Te",2.0]]}]}\n\n` +
+      `=== PPTX ===\n` +
+      `TOP: {filename, theme{primary_color,secondary_color,accent_color,background_color,dark_color,light_color,font_family}, title, author, company, subject, slides[]}\n` +
+      `SLIDE layouts (use field "layout"):\n` +
+      `  title{title:"Welcome",subtitle:"Subtitle here"}\n` +
+      `  content{title:"Agenda",bullets:["Item 1","Item 2"],paragraph:"Optional paragraph"}\n` +
+      `  two_columns{title:"Compare",left_column:["A","B"],right_column:["X","Y"]}\n` +
+      `  image_left{title:"With image",image_base64:"..." OR image_data:"...",bullets:["Caption"]}\n` +
+      `  image_right{title:"With image",image_base64:"...",bullets:["Caption"]}\n` +
+      `  table{title:"Results",headers:["Q1","Q2"],rows:[["100","200"],["300","400"]]}\n` +
+      `  chart{title:"Growth",chart{type:"bar|line|pie|scatter",title:"Growth",labels:["2019","2020","2021"],series:[{name:"Revenue",values:[100,150,200]}],show_legend:true}}\n` +
+      `  quote{text:"A quote.",author:"Unknown"}\n` +
+      `  section_header{title:"Part 2"}\n` +
+      `  closing{title:"Thank you",subtitle:"Questions?"}\n` +
+      `  custom{objects:[{type:"text|shape|image|chart|table",x:0.5,y:0.5,w:5,h:3,content:"..."|bullets:["..."]|table{headers,rows}|image_base64:"..."|chart{...}|shape:"rect|round_rect|ellipse|line",color:"#0D95A1",fill:"#F0F0F0",font_size:14,bold:false}]}\n` +
+      `NOTE: 16:9 layout (13.33x7.5 inches), theme colors applied to titles and accents.\n` +
+      `EXAMPLE: {"filename":"presenta.pptx","slides":[{"layout":"title","title":"Bienvenidos","subtitle":"Resumen Ejecutivo"},{"layout":"content","title:"Puntos Clave","bullets":["Estrategia 2024","Resultados"]}]\n\n` +
       `For edits (editPath + editChanges, editChanges replaces the existing file content via the Python engine):\n` +
-      `- XLSX: editChanges.sheets[].{name, update_cells[{cell,value,number_format}], add_rows[], add_merges[], remove_merges[], set_freeze}\n` +
-      `- DOCX: editChanges.template {placeholder: value} (replaces {{placeholder}} tokens) OR editChanges.replace [{find,replace}] for plain text replacement.\n` +
-      `- PPTX: editChanges.template {placeholder: value} (replaces {{placeholder}}) OR editChanges.replace [{find,replace}] for plain text in slides.\n` +
+      `- XLSX: editChanges.sheets[].{name, update_cells[{cell,value,number_format}], add_rows[[]], add_merges[], remove_merges[], set_freeze:"A2"}\n` +
+      `- DOCX: editChanges.template {"{{cliente}}":"ACME"} (replaces {{cliente}} tokens) OR editChanges.replace [{find:"Old",replace:"New"}] for plain text replacement.\n` +
+      `- PPTX: editChanges.template {"{{cliente}}":"ACME"} (replaces {{cliente}}) OR editChanges.replace [{find:"Old",replace:"New"}] for plain text in slides.\n\n` +
       `IMPORTANT LIMITS FOR FILE GENERATION:\n` +
-      `- NEVER generate massive datasets. If the user asks for large datasets, generate ONLY 3 to 5 sample rows.\n` +
+      `- NEVER generate massive datasets. If user asks for large datasets, generate ONLY 3 to 5 sample rows.\n` +
       `- Maximum 10 rows of data per sheet/table under any circumstance.\n` +
       `- Keep all JSON values compact: no extra whitespace, no comments, no line breaks inside values.\n` +
-      `- Use descriptive filenames in Spanish when appropriate.\n`,
+      `- Use descriptive filenames in Spanish when appropriate, with correct extension (.docx/.xlsx/.pptx).\n` +
+      `- Colors are #RRGGBB hex strings. Formulas start with "=". Charts are native, editable.\n` +
+      `- NEVER use "schema", "content", "document" as key for the body — ALWAYS put it inside \`data\`.\n`,
   };
 
   // Llamar a la API de NVIDIA con el historial completo + prompt del sistema
   try {
     const llmResult = await nvidiaChat({ messages: [system, ...body.messages] });
-    const rawContent = llmResult?.message?.content ?? '';
+    let rawContent = llmResult?.message?.content ?? '';
 
-    // Parsear respuesta estructurada (JSON schema strict)
-    const { content: cleanText, meta, fileGenerated, parseError } = parseStructuredResponse(rawContent);
+    // Parsear respuesta estructurada (parser defensivo en cascada)
+    let parsed = parseStructuredResponse(rawContent);
+    let { content: cleanText, meta, fileGenerated, parseError, parseWarnings = [] } = parsed;
 
     if (parseError) {
-      console.warn(`[CHAT] parse_error=${parseError} raw_len=${rawContent.length} genId=${llmResult?.generationId}`);
+      console.warn(
+        `[CHAT] parse_error=${parseError} raw_len=${rawContent.length} genId=${llmResult?.generationId} ` +
+        `warnings=${parseWarnings.join('|') || 'none'}`
+      );
     }
     if (!cleanText || !cleanText.trim()) {
       console.warn(
@@ -1514,6 +1742,33 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
       );
     }
 
+    // FASE D: reintento si content miente sobre archivo pero fileGenerated es null
+    if (!fileGenerated && /archivo generado|documento generado|\.docx|\.xlsx|\.pptx|listo para descarga|descarga/i.test(cleanText || '')) {
+      console.warn(`[CHAT] content_mentions_file_but_no_fileGenerated — retrying once with feedback`);
+      try {
+        const feedback = {
+          role: 'system',
+          content:
+            'Tu respuesta anterior mencionó que generaste un archivo pero tu JSON no parseó (mezclaste JSON con markdown o lo rompiste). ' +
+            'Responde SOLO con el JSON válido del schema exacto. Sin texto antes/después, sin ``` fences, sin emojis ni separadores markdown. ' +
+            'El objeto debe empezar con `{` y terminar con `}` y ser parseable por JSON.parse() sin preprocesamiento.',
+        };
+        const retry = await nvidiaChat({ messages: [system, feedback, ...body.messages] });
+        rawContent = retry?.message?.content ?? '';
+        const reparsed = parseStructuredResponse(rawContent);
+        if (reparsed.fileGenerated) {
+          console.warn(`[CHAT] retry_recovered_fileGenerated warnings=${reparsed.parseWarnings?.join('|') || 'none'}`);
+          cleanText = reparsed.content;
+          meta = reparsed.meta;
+          fileGenerated = reparsed.fileGenerated;
+          parseError = reparsed.parseError;
+          parseWarnings = reparsed.parseWarnings || [];
+        }
+      } catch (retryErr) {
+        console.warn(`[CHAT] retry_failed: ${retryErr?.message ?? retryErr}`);
+      }
+    }
+
     const messageId = nanoid(12);
     const ts = Date.now();
 
@@ -1521,35 +1776,41 @@ app.post('/api/projects/:id/chat', aiLimiter, upload.array('attachments', 10), a
     let generatedFile = null;
     if (fileGenerated) {
       try {
-        const fg = fileGenerated;
-        const outputDir = path.join(root, 'files', 'generated');
-
-        let genResult;
-        if (fg.editPath && fg.editChanges) {
-          const inputAbs = safeJoin(root, fg.editPath);
-          genResult = await editFile({
-            type: fg.type,
-            inputPath: inputAbs,
-            outputDir,
-            changes: fg.editChanges,
-            filename: fg.filename,
-          });
-        } else {
-          genResult = await generateFile({
-            type: fg.type,
-            outputDir,
-            data: fg.data,
-            filename: fg.filename,
-          });
+        const { fg, fixes } = normalizeFileGenerated(fileGenerated);
+        if (fixes.length) {
+          console.warn(`[CHAT] fileGenerated_fixes model=${llmResult?.raw?.model} fixes=${fixes.join('|')}`);
         }
+        if (!fg) {
+          console.warn(`[CHAT] fileGenerated_unrecoverable_after_normalize`);
+        } else {
+          const outputDir = path.join(root, 'files', 'generated');
+          let genResult;
+          if (fg.editPath && fg.editChanges) {
+            const inputAbs = safeJoin(root, fg.editPath);
+            genResult = await editFile({
+              type: fg.type,
+              inputPath: inputAbs,
+              outputDir,
+              changes: fg.editChanges,
+              filename: fg.filename,
+            });
+          } else {
+            genResult = await generateFile({
+              type: fg.type,
+              outputDir,
+              data: fg.data,
+              filename: fg.filename,
+            });
+          }
 
-        const relPath = path.relative(root, genResult.filePath).split(path.sep).join(path.posix.sep);
-        generatedFile = {
-          name: genResult.filename,
-          url: relPath,
-          type: fg.type,
-          meta: fg.type.toUpperCase(),
-        };
+          const relPath = path.relative(root, genResult.filePath).split(path.sep).join(path.posix.sep);
+          generatedFile = {
+            name: genResult.filename,
+            url: relPath,
+            type: fg.type,
+            meta: fg.type.toUpperCase(),
+          };
+        }
       } catch (genErr) {
         console.error('Auto-generation failed:', genErr);
       }
@@ -1686,4 +1947,4 @@ const server = app.listen(PORT, () => {
   console.log(`API listening on http://localhost:${PORT}`);
 });
 
-export { app, server, readContextFile, listAllContextFiles, CONTEXT_EXTS };
+export { app, server, readContextFile, listAllContextFiles, CONTEXT_EXTS, parseStructuredResponse, normalizeFileGenerated };

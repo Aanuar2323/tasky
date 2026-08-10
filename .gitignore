@@ -13,6 +13,8 @@ apps/web/dist/
 apps/api/dist/
 
 .DS_Store
+__pycache__/
+*.pyc
 
 # internal dev context
 AGENTS.md

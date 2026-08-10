@@ -45,7 +45,6 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8787 \
     WEB_PORT=3000 \
-    DOC_ENGINE_URL=http://127.0.0.1:8788 \
     STORAGE_ROOT=/app/storage \
     HOME=/tmp \
     NEXT_TELEMETRY_DISABLED=1 \
@@ -82,15 +81,14 @@ COPY --from=web-builder --chown=app:app /app/apps/web/public ./apps/web/standalo
 COPY --from=py-deps --chown=app:app /opt/docsite /opt/docsite
 COPY --chown=app:app apps/api/docengine ./apps/api/docengine
 
-# Entrypoint (procesos API + web + doc-engine)
+# Entrypoint (procesos API + web)
 COPY --chown=app:app docker/entrypoint.mjs /usr/local/bin/entrypoint.mjs
 
 USER app
-EXPOSE 8787 3000 8788
+EXPOSE 8787 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8787/health >/dev/null \
-  && wget -qO- http://127.0.0.1:8788/health >/dev/null \
   && wget -qO- http://127.0.0.1:3000/ >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
