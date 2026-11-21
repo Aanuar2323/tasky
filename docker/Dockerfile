@@ -1,24 +1,10 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_VERSION=22-bookworm-slim
-
-# ---------- Base con toolchain para módulos nativos ----------
-FROM node:${NODE_VERSION} AS native
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       g++ \
-       libcairo2-dev \
-       libgif-dev \
-       libjpeg62-turbo-dev \
-       libpango1.0-dev \
-       librsvg2-dev \
-       make \
-       pkg-config \
-       python3 \
-    && rm -rf /var/lib/apt/lists/*
+ARG PYTHON_VERSION=3.11-slim-bookworm
 
 # ---------- 1. Installer: api prod deps (sin dev) ----------
-FROM native AS api-deps
+FROM node:${NODE_VERSION} AS api-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/.env.example ./apps/api/
@@ -26,7 +12,7 @@ COPY apps/web/package.json apps/web/.env.example ./apps/web/
 RUN npm ci --omit=dev --workspace=apps/api --include-workspace-root && npm cache clean --force
 
 # ---------- 2. Installer: web full deps (incluye dev para build) ----------
-FROM native AS web-deps
+FROM node:${NODE_VERSION} AS web-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/.env.example ./apps/api/
@@ -45,7 +31,14 @@ COPY package.json package-lock.json ./
 COPY apps/web ./apps/web
 RUN npm run build -w apps/web
 
-# ---------- 4. Runtime ----------
+# ---------- 4. Builder: Python doc-engine deps (target dir, no venv) ----------
+FROM python:${PYTHON_VERSION} AS py-deps
+RUN pip install --no-cache-dir --quiet --upgrade pip \
+    && mkdir -p /opt/docsite
+COPY apps/api/docengine/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --quiet --target=/opt/docsite -r /tmp/requirements.txt
+
+# ---------- 5. Runtime ----------
 FROM node:${NODE_VERSION} AS runtime
 WORKDIR /app
 
@@ -54,17 +47,20 @@ ENV NODE_ENV=production \
     WEB_PORT=3000 \
     STORAGE_ROOT=/app/storage \
     HOME=/tmp \
-    NEXT_TELEMETRY_DISABLED=1
+    NEXT_TELEMETRY_DISABLED=1 \
+    PYTHONPATH=/app/apps/api/docengine:/opt/docsite \
+    PYTHONUNBUFFERED=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       libcairo2 \
-       libgif7 \
-       libjpeg62-turbo \
-       libpango-1.0-0 \
-       librsvg2-2 \
-       tini \
-       wget \
+        tini \
+        wget \
+        python3 \
+        libglib2.0-0 \
+        libxml2 \
+        libxslt1.1 \
+        libjpeg62-turbo \
+        libgl1 \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system app \
     && adduser --system --ingroup app app \
@@ -80,6 +76,10 @@ COPY --chown=app:app package.json package-lock.json ./
 COPY --from=web-builder --chown=app:app /app/apps/web/.next/standalone ./apps/web/standalone
 COPY --from=web-builder --chown=app:app /app/apps/web/.next/static ./apps/web/standalone/apps/web/.next/static
 COPY --from=web-builder --chown=app:app /app/apps/web/public ./apps/web/standalone/apps/web/public
+
+# Python doc-engine: paquetes instalados en /opt/docsite + código fuente
+COPY --from=py-deps --chown=app:app /opt/docsite /opt/docsite
+COPY --chown=app:app apps/api/docengine ./apps/api/docengine
 
 # Entrypoint (procesos API + web)
 COPY --chown=app:app docker/entrypoint.mjs /usr/local/bin/entrypoint.mjs

@@ -1,52 +1,27 @@
 "use client";
 
-import type { Provider, ProviderInfo, ModelInfo } from "@/app/lib/api";
+import type { Provider } from "../lib/api";
+import { ChevronDownIcon } from "./icons";
 
-interface ModelBarProps {
-  activeProvider: Provider;
-  providers: Record<Provider, ProviderInfo>;
-  currentModel: string;
-  onOpen: () => void;
+export function shortModelId(id: string) {
+  const last = id.split("/").pop() ?? id;
+  return last.replace(/:free$/, "");
 }
 
-function shortModelId(id: string) {
-  const parts = id.split("/");
-  return parts.length > 1 ? parts.slice(1).join("/") : id;
-}
-
-const PROVIDER_ICONS: Record<Provider, string> = {
-  openrouter: "◉",
-  nvidia: "▣",
-};
-
-export default function ModelBar({
-  activeProvider,
-  providers,
-  currentModel,
+export default function ModelTrigger({
+  provider,
+  model,
   onOpen,
-}: ModelBarProps) {
-  const label = providers[activeProvider]?.label ?? activeProvider;
-  const modelShort = shortModelId(currentModel || "");
+}: {
+  provider: Provider;
+  model: string;
+  onOpen: () => void;
+}) {
   return (
-    <div className="model-bar">
-      <button
-        className="mb-trigger"
-        onClick={onOpen}
-        title="Change model/provider"
-        aria-label="Change model/provider"
-      >
-        <span className={`mb-trigger-icon mb-trigger-icon--${activeProvider}`}>
-          {PROVIDER_ICONS[activeProvider] ?? "●"}
-        </span>
-        <span className="mb-trigger-content">
-          <span className="mb-trigger-provider">{label}</span>
-          <span className="mb-trigger-model">{modelShort || "—"}</span>
-        </span>
-        <span className="mb-trigger-chevron">▾</span>
-      </button>
-    </div>
+    <button type="button" className="model-trigger" onClick={onOpen} aria-label={`Modelo ${model || "sin elegir"}. Cambiar modelo`}>
+      <span className="mt-dot" data-provider={provider} aria-hidden="true" />
+      <span className="mt-name">{shortModelId(model) || "Elegir modelo"}</span>
+      <ChevronDownIcon className="mt-chevron" />
+    </button>
   );
 }
-
-export { ModelBar };
-export type { Provider, ProviderInfo, ModelInfo };

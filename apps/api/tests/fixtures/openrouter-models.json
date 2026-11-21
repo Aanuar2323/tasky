@@ -1,0 +1,68 @@
+{
+  "data": [
+    {
+      "id": "nvidia/nemotron-3.5-lightning:free",
+      "canonical_slug": "nvidia/nemotron-3.5-lightning-20260807",
+      "hugging_face_id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+      "name": "NVIDIA: Nemotron 3.5 Lightning (free)",
+      "created": 1786452751,
+      "description": "Open mixture-of-experts model.",
+      "context_length": 1000000,
+      "architecture": { "modality": "text->text", "input_modalities": ["text"], "output_modalities": ["text"], "tokenizer": "Other", "instruct_type": null },
+      "pricing": { "prompt": "0", "completion": "0" },
+      "top_provider": { "context_length": 1000000, "max_completion_tokens": 65536, "is_moderated": false },
+      "per_request_limits": null,
+      "supported_parameters": ["include_reasoning", "max_tokens", "reasoning", "seed", "temperature", "tool_choice", "tools", "top_p"],
+      "default_parameters": {},
+      "reasoning": { "mandatory": false }
+    },
+    {
+      "id": "openai/o4-mini",
+      "canonical_slug": "openai/o4-mini-2025-04-16",
+      "hugging_face_id": "",
+      "name": "OpenAI: o4 Mini",
+      "created": 1744820942,
+      "description": "Compact reasoning model.",
+      "context_length": 200000,
+      "architecture": { "modality": "text+image->text", "input_modalities": ["image", "text", "file"], "output_modalities": ["text"], "tokenizer": "GPT", "instruct_type": null },
+      "pricing": { "prompt": "0.0000011", "completion": "0.0000044" },
+      "top_provider": { "context_length": 200000, "max_completion_tokens": 100000, "is_moderated": true },
+      "per_request_limits": null,
+      "supported_parameters": ["include_reasoning", "max_tokens", "reasoning", "response_format", "seed", "structured_outputs", "tool_choice", "tools"],
+      "default_parameters": {},
+      "reasoning": { "mandatory": true }
+    },
+    {
+      "id": "google/gemma-3-27b-it:free",
+      "canonical_slug": "google/gemma-3-27b-it",
+      "hugging_face_id": "google/gemma-3-27b-it",
+      "name": "Google: Gemma 3 27B (free)",
+      "created": 1741756359,
+      "description": "Open multimodal model.",
+      "context_length": 96000,
+      "architecture": { "modality": "text+image->text", "input_modalities": ["text", "image"], "output_modalities": ["text"], "tokenizer": "Gemini", "instruct_type": "gemma" },
+      "pricing": { "prompt": "0", "completion": "0" },
+      "top_provider": { "context_length": 96000, "max_completion_tokens": 8192, "is_moderated": false },
+      "per_request_limits": null,
+      "supported_parameters": ["max_tokens", "response_format", "seed", "stop", "temperature", "top_p"],
+      "default_parameters": {},
+      "reasoning": null
+    },
+    {
+      "id": "mistralai/mistral-small-3.2-24b-instruct",
+      "canonical_slug": "mistralai/mistral-small-3.2-24b-instruct-2506",
+      "hugging_face_id": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+      "name": "Mistral: Mistral Small 3.2 24B",
+      "created": 1750443016,
+      "description": "Instruction-tuned model.",
+      "context_length": 131072,
+      "architecture": { "modality": "text+image->text", "input_modalities": ["image", "text"], "output_modalities": ["text"], "tokenizer": "Mistral", "instruct_type": null },
+      "pricing": { "prompt": "0.00000005", "completion": "0.0000001" },
+      "top_provider": { "context_length": 131072, "max_completion_tokens": null, "is_moderated": false },
+      "per_request_limits": null,
+      "supported_parameters": ["frequency_penalty", "max_tokens", "presence_penalty", "response_format", "seed", "stop", "structured_outputs", "temperature", "tool_choice", "tools", "top_p"],
+      "default_parameters": {},
+      "reasoning": null
+    }
+  ]
+}

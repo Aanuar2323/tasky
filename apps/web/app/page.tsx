@@ -1,934 +1,496 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
-import Topbar from "./components/Topbar";
-import Sidebar from "./components/Sidebar";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatPanel from "./components/ChatPanel";
 import Composer from "./components/Composer";
-import SidePanel from "./components/SidePanel";
-import ModelBar from "./components/ModelBar";
-import {
-  getProjects,
-  createProject,
-  getAreas,
-  updateAreas,
-  getChatLog,
-  sendMessage,
-  createTask,
-  addToHistory,
-  getTree,
-  getGeneratedHistory,
-  getRules,
-  updateRules,
-  checkApiStatus,
-  saveSetup,
-  fetchModels,
-  updateModel,
-  deleteFile,
-  uploadFile,
-  downloadFile,
-  deleteChat,
-  deleteArea,
-  getProviders,
-  setProvider as setProviderApi,
-  setProviderKey,
-} from "./lib/api";
-import type { Area, ChatLogEntry, TreeEntry, ModelInfo, Provider, ProviderInfo, ApiErrorBody } from "./lib/api";
+import FilePreview from "./components/FilePreview";
+import ModelTrigger from "./components/ModelBar";
+import ReasoningSelect from "./components/ReasoningSelect";
 import ModelSelectorModal from "./components/ModelSelectorModal";
-import type { ChatMessage } from "./types/chat";
+import SidePanel, { type PanelTab } from "./components/SidePanel";
+import Sidebar from "./components/Sidebar";
+import Topbar from "./components/Topbar";
+import { useChat } from "./hooks/useChat";
+import { useModels } from "./hooks/useModels";
+import { usePersistentState } from "./hooks/usePersistentState";
+import { effortKey, resolveEffort, withEffort, type EffortSelections, type ReasoningLevel } from "./lib/reasoning";
+import {
+  addToHistory,
+  createProject,
+  deleteArea,
+  deleteChat,
+  getAreas,
+  getProjects,
+  saveFileToDisk,
+  updateAreas,
+  type Area,
+  type Provider,
+} from "./lib/api";
+import type { ChatFile } from "./types/chat";
+
+interface Workspace {
+  projectId: string;
+  areas: Area[];
+  activeAreaId: string;
+}
+
+const MOBILE_QUERY = "(max-width: 900px)";
+const DEFAULT_CHAT_NAME = /^Chat \d+$/;
+
+function newId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  // Sin contexto seguro (http en la red local) no hay randomUUID.
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function nextName(prefix: string, taken: string[]) {
+  let n = taken.length + 1;
+  while (taken.includes(`${prefix} ${n}`)) n += 1;
+  return `${prefix} ${n}`;
+}
+
+function titleFrom(text: string) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > 42 ? `${clean.slice(0, 40).trimEnd()}…` : clean;
+}
+
+async function loadWorkspace(): Promise<Workspace> {
+  const { projects } = await getProjects();
+  const projectId = projects[0]?.id ?? (await createProject("Tasky")).id;
+  const { areas, activeAreaId } = await getAreas(projectId);
+  const active = areas.some((a) => a.id === activeAreaId) ? activeAreaId : (areas[0]?.id ?? "");
+  return { projectId, areas, activeAreaId: active };
+}
+
+function Splash({ error, onRetry }: { error?: string; onRetry?: () => void }) {
+  return (
+    <div className="splash">
+      {error ? (
+        <div className="splash-card" role="alert">
+          <h1>{error}</h1>
+          <p>
+            Iniciá el servidor con <code>npm run dev:all</code> y reintentá.
+          </p>
+          <button type="button" className="btn" data-tone="primary" onClick={onRetry}>
+            Reintentar
+          </button>
+        </div>
+      ) : (
+        <span className="brand splash-brand" aria-label="Cargando Tasky">
+          Tasky
+        </span>
+      )}
+    </div>
+  );
+}
+
+const NO_EFFORTS: EffortSelections = {};
+const NO_LEVELS: ReasoningLevel[] = [];
 
 export default function Home() {
-  const [projectId, setProjectId] = useState<string>("");
-  const [areas, setAreas] = useState<Area[]>([]);
-  const [activeAreaId, setActiveAreaId] = useState<string>("");
-  const [activeChatId, setActiveChatId] = useState<string>("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [inputText, setInputText] = useState("");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidePanelOpen, setSidePanelOpen] = useState(false);
-  const [sidePanelTab, setSidePanelTab] = useState<"info" | "historial" | "reglas">("info");
-  const [loading, setLoading] = useState(false);
+  const models = useModels();
+  const [setupDone, setSetupDone] = useState(false);
+  const needsSetup = !!models.status && (!models.configured || (models.initiallyConfigured === false && !setupDone));
+  const ready = !!models.status && !needsSetup;
 
-  const [setupMode, setSetupMode] = useState(true);
-  const [setupApiKey, setSetupApiKey] = useState("");
-  const [setupModel, setSetupModel] = useState("");
-  const [setupProvider, setSetupProvider] = useState<Provider>("openrouter");
-  const [setupSaving, setSetupSaving] = useState(false);
-  const [setupError, setSetupError] = useState("");
-  const [currentModel, setCurrentModel] = useState("");
-  const [activeProvider, setActiveProvider] = useState<Provider>("openrouter");
-  const [providersInfo, setProvidersInfo] = useState<Record<Provider, ProviderInfo>>({} as Record<Provider, ProviderInfo>);
-  const [showConfigModal, setShowConfigModal] = useState(false);
-  const [models, setModels] = useState<ModelInfo[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsFetched, setModelsFetched] = useState(false);
-
-  const [treeEntries, setTreeEntries] = useState<TreeEntry[]>([]);
-  const [generatedHistory, setGeneratedHistory] = useState<unknown>(null);
-  const [rulesContent, setRulesContent] = useState<string>("");
-  const sidePanelCacheRef = useRef<Map<string, { tree?: TreeEntry[]; history?: unknown; rules?: string }>>(new Map());
-
-  const loadChatLog = useCallback(
-    async (pId: string, aId: string, cId: string) => {
-      try {
-        const { entries } = await getChatLog(pId, aId, cId);
-        setChatMessages(
-          entries.map((e: ChatLogEntry) => {
-            const rawFile = e.file as Record<string, unknown> | undefined;
-            const file = rawFile?.name
-              ? rawFile as unknown as ChatMessage["file"]
-              : rawFile
-                ? { name: String(rawFile.filename ?? ""), url: String(rawFile.path ?? ""), type: String(rawFile.type ?? ""), meta: String(rawFile.type ?? "").toUpperCase() }
-                : undefined;
-            const rawError = e.error as { title: string; hint: string; codes: number[] } | undefined;
-            return {
-              role: e.role as "user" | "assistant",
-              content: e.content,
-              ts: e.ts as number | undefined,
-              file,
-              meta: e.meta as ChatMessage["meta"],
-              error: rawError?.title ? rawError : undefined,
-            } as ChatMessage;
-          })
-        );
-      } catch {
-        setChatMessages([]);
-      }
-    },
-    []
-  );
-
-  const loadSidePanelData = useCallback(
-    async (pId: string, aId: string, tab: "info" | "historial" | "reglas") => {
-      const cacheKey = `${pId}:${aId}`;
-      const cached = sidePanelCacheRef.current.get(cacheKey) ?? {};
-      if (tab === "info") {
-        if (cached.tree) {
-          setTreeEntries(cached.tree);
-          return;
-        }
-        try {
-          const { entries } = await getTree(pId, undefined, aId);
-          setTreeEntries(entries);
-          sidePanelCacheRef.current.set(cacheKey, { ...cached, tree: entries });
-        } catch {
-          setTreeEntries([]);
-        }
-      }
-      if (tab === "historial") {
-        try {
-          const hist = await getGeneratedHistory(pId, aId);
-          setGeneratedHistory(hist);
-          sidePanelCacheRef.current.set(cacheKey, { ...cached, history: hist });
-        } catch {
-          setGeneratedHistory(null);
-        }
-      }
-      if (tab === "reglas") {
-        if (typeof cached.rules === "string") {
-          setRulesContent(cached.rules);
-          return;
-        }
-        try {
-          const { content } = await getRules(pId, aId);
-          setRulesContent(content);
-          sidePanelCacheRef.current.set(cacheKey, { ...cached, rules: content });
-        } catch {
-          setRulesContent("");
-        }
-      }
-    },
-    []
-  );
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [initError, setInitError] = useState("");
+  const [initAttempt, setInitAttempt] = useState(0);
 
   useEffect(() => {
-    async function init() {
-      try {
-        const status = await checkApiStatus();
-        if (!status.configured) {
-          setSetupMode(true);
-          if (status.openrouterConfigured) {
-            setSetupProvider("openrouter");
-          } else if (status.nvidiaConfigured) {
-            setSetupProvider("nvidia");
-          }
-          setProvidersInfo(status.availableProviders ?? {});
-          return;
-        }
-        setCurrentModel(status.model || "");
-        setActiveProvider(status.providerId || "openrouter");
-        setProvidersInfo(status.availableProviders ?? {});
-      } catch {
-        setSetupMode(true);
-        return;
-      }
-
-      setSetupMode(false);
-
-      try {
-      const { projects: projs } = await getProjects();
-      let pId: string;
-
-      if (!projs.length) {
-        const created = await createProject("Tasky");
-        pId = created.id;
-      } else {
-        pId = projs[0].id;
-      }
-
-      setProjectId(pId);
-
-        const { areas: areaList, activeAreaId: aAreaId } = await getAreas(pId);
-        setAreas(areaList);
-        setActiveAreaId(aAreaId);
-
-        const activeArea =
-          areaList.find((a) => a.id === aAreaId) || areaList[0];
-        const cId =
-          activeArea?.activeChatId || activeArea?.chats?.[0]?.id || "";
-        setActiveChatId(cId);
-
-        if (cId) {
-          await loadChatLog(pId, aAreaId, cId);
-        }
-      } catch (err) {
-        console.error("Init failed:", err);
-      }
-    }
-
-    const saved = localStorage.getItem("sidebarCollapsed");
-    if (saved !== null) {
-      setSidebarCollapsed(saved === "true");
-    }
-
-    init();
-  }, [loadChatLog]);
-
-  useEffect(() => {
-    localStorage.setItem("sidebarCollapsed", String(sidebarCollapsed));
-  }, [sidebarCollapsed]);
-
-  const handleSelectArea = useCallback(
-    async (areaId: string) => {
-      if (!projectId) return;
-      setActiveAreaId(areaId);
-      const area = areas.find((a) => a.id === areaId);
-      const cId = area?.activeChatId || area?.chats?.[0]?.id || "";
-      setActiveChatId(cId);
-      const nextAreas = areas.map((a) => (a.id === areaId ? { ...a, activeChatId: cId || a.activeChatId } : a));
-      setAreas(nextAreas);
-      setSidePanelOpen(false);
-      await updateAreas(projectId, { areas: nextAreas, activeAreaId: areaId });
-      if (cId) {
-        await loadChatLog(projectId, areaId, cId);
-      } else {
-        setChatMessages([]);
-      }
-    },
-    [projectId, areas, loadChatLog]
-  );
-
-  const handleAddArea = useCallback(async () => {
-    if (!projectId) return;
-    const name = `Área ${areas.length + 1}`;
-    const newArea: Area = {
-      id: crypto.randomUUID(),
-      name,
-      pinned: false,
-      chats: [{ id: crypto.randomUUID(), name: "Chat 1", pinned: false }],
-      activeChatId: "",
-    };
-    newArea.activeChatId = newArea.chats[0].id;
-    const updatedAreas = [...areas, newArea];
-    setAreas(updatedAreas);
-    setActiveAreaId(newArea.id);
-    setActiveChatId(newArea.activeChatId);
-    setChatMessages([]);
-    try {
-      await updateAreas(projectId, {
-        areas: updatedAreas,
-        activeAreaId: newArea.id,
+    if (!ready || workspace) return;
+    let cancelled = false;
+    loadWorkspace()
+      .then((ws) => {
+        if (cancelled) return;
+        setWorkspace(ws);
+        setInitError("");
+      })
+      .catch(() => {
+        if (!cancelled) setInitError("No se pudo abrir el proyecto");
       });
-    } catch (err) {
-      console.error("Add area failed:", err);
-    }
-  }, [projectId, areas]);
-
-  const handleRenameArea = useCallback(
-    async (areaId: string, name: string) => {
-      if (!projectId || !name.trim()) return;
-      const updatedAreas = areas.map((a) =>
-        a.id === areaId ? { ...a, name: name.trim() } : a
-      );
-      setAreas(updatedAreas);
-      try {
-        await updateAreas(projectId, { areas: updatedAreas, activeAreaId });
-      } catch (err) {
-        console.error("Rename area failed:", err);
-      }
-    },
-    [projectId, areas, activeAreaId]
-  );
-
-  const handleDeleteArea = useCallback(
-    async (areaId: string) => {
-      if (!projectId) return;
-      // regla: no eliminar la última área
-      if (areas.length <= 1) return;
-      try {
-        await deleteArea(projectId, areaId);
-      } catch (err) {
-        console.error("Delete area failed:", err);
-        return;
-      }
-      const remaining = areas.filter((a) => a.id !== areaId);
-      setAreas(remaining);
-      // Si se elimina el área activa, mover a otra
-      if (activeAreaId === areaId) {
-        const nextArea = remaining[0];
-        if (nextArea) {
-          const nextChatId =
-            nextArea.activeChatId || nextArea.chats?.[0]?.id || "";
-          setActiveAreaId(nextArea.id);
-          setActiveChatId(nextChatId);
-          setSidePanelOpen(false);
-          try {
-            await updateAreas(projectId, {
-              areas: remaining,
-              activeAreaId: nextArea.id,
-            });
-          } catch (err) {
-            console.error("Persist active area after delete failed:", err);
-          }
-          if (nextChatId) {
-            await loadChatLog(projectId, nextArea.id, nextChatId);
-          } else {
-            setChatMessages([]);
-          }
-        }
-      } else {
-        try {
-          await updateAreas(projectId, {
-            areas: remaining,
-            activeAreaId,
-          });
-        } catch (err) {
-          console.error("Persist after delete failed:", err);
-        }
-      }
-    },
-    [projectId, areas, activeAreaId, loadChatLog]
-  );
-
-  const handleSelectChat = useCallback(
-    async (areaId: string, chatId: string) => {
-      if (!projectId) return;
-      setActiveAreaId(areaId);
-      setActiveChatId(chatId);
-      const updatedAreas = areas.map((a) =>
-        a.id === areaId ? { ...a, activeChatId: chatId } : a
-      );
-      setAreas(updatedAreas);
-      setSidePanelOpen(false);
-      await updateAreas(projectId, { areas: updatedAreas, activeAreaId: areaId });
-      await loadChatLog(projectId, areaId, chatId);
-    },
-    [projectId, areas, loadChatLog]
-  );
-
-  const handleAddChat = useCallback(
-    async (areaId: string) => {
-      if (!projectId) return;
-      const area = areas.find((a) => a.id === areaId);
-      if (!area) return;
-      const chatNum = area.chats.length + 1;
-      const newChat = { id: crypto.randomUUID(), name: `Chat ${chatNum}`, pinned: false };
-      const updatedChats = [...area.chats, newChat];
-      const updatedAreas = areas.map((a) =>
-        a.id === areaId ? { ...a, chats: updatedChats, activeChatId: newChat.id } : a
-      );
-      setAreas(updatedAreas);
-      setActiveAreaId(areaId);
-      setActiveChatId(newChat.id);
-      setChatMessages([]);
-      try {
-        await updateAreas(projectId, { areas: updatedAreas, activeAreaId });
-      } catch (err) {
-        console.error("Add chat failed:", err);
-      }
-    },
-    [projectId, areas]
-  );
-
-  const handleRenameChat = useCallback(
-    async (areaId: string, chatId: string, name: string) => {
-      if (!projectId) return;
-      const updatedAreas = areas.map((a) =>
-        a.id === areaId
-          ? { ...a, chats: a.chats.map((c) => (c.id === chatId ? { ...c, name } : c)) }
-          : a
-      );
-      setAreas(updatedAreas);
-      try {
-        await updateAreas(projectId, { areas: updatedAreas, activeAreaId });
-      } catch (err) {
-        console.error("Rename chat failed:", err);
-      }
-    },
-    [projectId, areas, activeAreaId]
-  );
-
-  const handleDeleteChat = useCallback(
-    async (areaId: string, chatId: string) => {
-      if (!projectId) return;
-      const area = areas.find((a) => a.id === areaId);
-      if (!area || area.chats.length <= 1) return;
-      const updatedChats = area.chats.filter((c) => c.id !== chatId);
-      let newActiveChatId = activeChatId;
-      if (chatId === activeChatId) {
-        newActiveChatId = updatedChats[0]?.id || "";
-      }
-      const updatedAreas = areas.map((a) =>
-        a.id === areaId
-          ? { ...a, chats: updatedChats, activeChatId: newActiveChatId }
-          : a
-      );
-      setAreas(updatedAreas);
-      if (areaId === activeAreaId) {
-        setActiveChatId(newActiveChatId);
-        if (chatId === activeChatId && newActiveChatId) {
-          await loadChatLog(projectId, areaId, newActiveChatId);
-        }
-      }
-      try {
-        await updateAreas(projectId, { areas: updatedAreas, activeAreaId });
-      } catch (err) {
-        console.error("Delete chat failed:", err);
-      }
-    },
-    [projectId, areas, activeAreaId, activeChatId, loadChatLog]
-  );
-
-  const handleOpenPanel = useCallback(
-    (areaId: string, tab: "info" | "historial" | "reglas") => {
-      if (areaId !== activeAreaId) {
-        setActiveAreaId(areaId);
-        const area = areas.find((a) => a.id === areaId);
-        const cId = area?.activeChatId || area?.chats?.[0]?.id || "";
-        setActiveChatId(cId);
-        if (projectId && cId) {
-          loadChatLog(projectId, areaId, cId);
-        }
-      }
-      setSidePanelTab(tab);
-      setSidePanelOpen(true);
-      if (projectId && areaId) {
-        loadSidePanelData(projectId, areaId, tab);
-      }
-    },
-    [projectId, activeAreaId, areas, loadChatLog, loadSidePanelData]
-  );
-
-  const handleOpenPanelFromTopbar = useCallback(
-    (tab: "info" | "historial" | "reglas") => {
-      setSidePanelTab(tab);
-      setSidePanelOpen(true);
-      if (projectId && activeAreaId) {
-        loadSidePanelData(projectId, activeAreaId, tab);
-      }
-    },
-    [projectId, activeAreaId, loadSidePanelData]
-  );
-
-  const handleSend = useCallback(() => {
-    if (!projectId || !activeAreaId || !activeChatId || !inputText.trim()) return;
-
-    const userMsg: ChatMessage = {
-      role: "user",
-      content: inputText.trim(),
-      ts: Date.now(),
+    return () => {
+      cancelled = true;
     };
+  }, [ready, workspace, initAttempt]);
 
-    setInputText("");
-    setLoading(true);
+  const [navHidden, setNavHidden] = usePersistentState("tasky.navHidden", false);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [panel, setPanel] = useState<{ open: boolean; tab: PanelTab }>({ open: false, tab: "info" });
+  const [preview, setPreview] = useState<ChatFile | null>(null);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [focusKey, setFocusKey] = useState(0);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
 
-    const allMessages = [...chatMessages, userMsg].map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+  const projectId = workspace?.projectId ?? "";
+  const areas = useMemo(() => workspace?.areas ?? [], [workspace]);
+  const activeArea = areas.find((a) => a.id === workspace?.activeAreaId) ?? null;
+  const activeChat = activeArea
+    ? (activeArea.chats.find((c) => c.id === activeArea.activeChatId) ?? activeArea.chats[0] ?? null)
+    : null;
+  const activeAreaId = activeArea?.id ?? "";
+  const activeChatId = activeChat?.id ?? "";
 
-    setChatMessages((prev) => [...prev, userMsg]);
-    sendMessage(projectId, {
-      messages: allMessages,
-      areaId: activeAreaId,
-      chatId: activeChatId,
-    })
-      .then((res) => {
-        const assistantMsg: ChatMessage = {
-          role: "assistant",
-          content: res.content,
-          ts: Date.now(),
-          file: res.file as ChatMessage["file"],
-          meta: res.meta as ChatMessage["meta"],
-        };
-        setChatMessages((prev) => [...prev, assistantMsg]);
-      })
-      .catch((err) => {
-        console.error("Send failed:", err);
-        const e = err as Error & Required<ApiErrorBody>;
-        const errorHuman = e.errorHuman;
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: "",
-            ts: Date.now(),
-            error: errorHuman?.title ? errorHuman : { title: "Error inesperado", hint: "Algo salió mal. Reintentá o cambiá de modelo.", codes: [e.upstreamStatus || 502].filter(Boolean), retriable: e.retriable ?? false },
-          },
-        ]);
-      })
-      .finally(() => setLoading(false));
-  }, [projectId, activeAreaId, activeChatId, chatMessages, inputText]);
+  // La elección es por modelo y solo se usa si el modelo activo declara ese nivel.
+  const [effortSelections, setEffortSelections] = usePersistentState<EffortSelections>("tasky.reasoningEffort", NO_EFFORTS);
+  const reasoningLevels = models.capabilities?.reasoningLevels ?? NO_LEVELS;
+  const modelEffortKey = effortKey(models.activeProvider, models.currentModel);
+  const reasoningEffort = resolveEffort(effortSelections, modelEffortKey, reasoningLevels);
 
-  const handleToggleSidebar = useCallback(() => {
-    setSidebarCollapsed((prev) => !prev);
+  const chat = useChat({ projectId, areaId: activeAreaId, chatId: activeChatId, reasoningEffort });
+  const { messages, loading, sending, send: sendMessage, stop, regenerate, markFileSaved } = chat;
+
+  const fileCount = useMemo(() => messages.reduce((n, m) => n + (m.files?.length ?? 0), 0), [messages]);
+
+  const notify = useCallback((text: string) => {
+    setToast(text);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2800);
   }, []);
 
-  const handleCloseSidePanel = useCallback(() => {
-    setSidePanelOpen(false);
-  }, []);
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
-  const handleChangeSidePanelTab = useCallback(
-    (tab: "info" | "historial" | "reglas") => {
-      setSidePanelTab(tab);
-      if (projectId && activeAreaId) {
-        loadSidePanelData(projectId, activeAreaId, tab);
-      }
-    },
-    [projectId, activeAreaId, loadSidePanelData]
-  );
-
-  const handleUpdateRules = useCallback(
-    async (markdown: string) => {
-      if (!projectId || !activeAreaId) return;
-      try {
-        const { updateRules } = await import("./lib/api");
-        await updateRules(projectId, markdown, activeAreaId);
-        setRulesContent(markdown);
-        const key = `${projectId}:${activeAreaId}`;
-        const cached = sidePanelCacheRef.current.get(key) ?? {};
-        sidePanelCacheRef.current.set(key, { ...cached, rules: markdown });
-      } catch (err) {
-        console.error("Update rules failed:", err);
-      }
-    },
-    [projectId, activeAreaId]
-  );
-
-  const handleAttach = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file || !projectId) return;
-      try {
-        const { uploadFile } = await import("./lib/api");
-        await uploadFile(projectId, file);
-      } catch (err) {
-        console.error("Upload failed:", err);
-      }
+  useEffect(() => {
+    if (!mobileNav) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileNav(false);
     };
-    input.click();
-  }, [projectId]);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileNav]);
 
-  const handleUploadContextFile = useCallback(async () => {
-    if (!projectId || !activeAreaId) return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-      try {
-        const { uploadFile } = await import("./lib/api");
-        await uploadFile(projectId, file, `ai/layer2/areas/${activeAreaId}`);
-        const key = `${projectId}:${activeAreaId}`;
-        const cached = sidePanelCacheRef.current.get(key) ?? {};
-        sidePanelCacheRef.current.set(key, { ...cached, tree: undefined });
-        await loadSidePanelData(projectId, activeAreaId, "info");
-      } catch (err) {
-        console.error("Upload context failed:", err);
-      }
-    };
-    input.click();
-  }, [projectId, activeAreaId, loadSidePanelData]);
+  // ── Áreas y chats ───────────────────────────────────────
 
-  const handleDeleteContextFile = useCallback(
-    async (filePath: string) => {
-      if (!projectId || !activeAreaId) return;
-      try {
-        await deleteFile(projectId, filePath);
-        const key = `${projectId}:${activeAreaId}`;
-        const cached = sidePanelCacheRef.current.get(key) ?? {};
-        sidePanelCacheRef.current.set(key, { ...cached, tree: undefined });
-        await loadSidePanelData(projectId, activeAreaId, "info");
-      } catch (err) {
-        console.error("Delete context failed:", err);
-      }
+  const commit = useCallback(
+    (next: Workspace) => {
+      setWorkspace(next);
+      updateAreas(next.projectId, { areas: next.areas, activeAreaId: next.activeAreaId }).catch(() =>
+        notify("No se pudieron guardar los cambios")
+      );
     },
-    [projectId, activeAreaId, loadSidePanelData]
+    [notify]
   );
 
-  const handleRefreshInfo = useCallback(async () => {
-    if (!projectId || !activeAreaId) return;
-    const key = `${projectId}:${activeAreaId}`;
-    const cached = sidePanelCacheRef.current.get(key) ?? {};
-    sidePanelCacheRef.current.set(key, { ...cached, tree: undefined });
-    await loadSidePanelData(projectId, activeAreaId, "info");
-  }, [projectId, activeAreaId, loadSidePanelData]);
+  const selectArea = useCallback(
+    (areaId: string) => {
+      if (!workspace || areaId === workspace.activeAreaId) return;
+      commit({ ...workspace, activeAreaId: areaId });
+    },
+    [workspace, commit]
+  );
 
-  const handleDownload = useCallback(
-    async (file: ChatMessage["file"]) => {
-      if (!file || !projectId) return;
-      try {
-        const path = file.url || file.name;
-        const blob = await downloadFile(projectId, path);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = file.name;
-        a.click();
-        URL.revokeObjectURL(url);
-      } catch (err) {
-        console.error("Download failed:", err);
-      }
+  const selectChat = useCallback(
+    (areaId: string, chatId: string) => {
+      if (!workspace) return;
+      setMobileNav(false);
+      const area = workspace.areas.find((a) => a.id === areaId);
+      if (!area || (areaId === workspace.activeAreaId && area.activeChatId === chatId)) return;
+      commit({
+        ...workspace,
+        activeAreaId: areaId,
+        areas: workspace.areas.map((a) => (a.id === areaId ? { ...a, activeChatId: chatId } : a)),
+      });
+    },
+    [workspace, commit]
+  );
+
+  const addArea = useCallback(() => {
+    if (!workspace) return null;
+    const id = newId();
+    const chatId = newId();
+    const area: Area = {
+      id,
+      name: nextName("Área", workspace.areas.map((a) => a.name)),
+      pinned: false,
+      chats: [{ id: chatId, name: "Chat 1", pinned: false }],
+      activeChatId: chatId,
+    };
+    commit({ ...workspace, areas: [...workspace.areas, area], activeAreaId: id });
+    return id;
+  }, [workspace, commit]);
+
+  const renameArea = useCallback(
+    (areaId: string, name: string) => {
+      if (!workspace) return;
+      commit({ ...workspace, areas: workspace.areas.map((a) => (a.id === areaId ? { ...a, name } : a)) });
+    },
+    [workspace, commit]
+  );
+
+  const removeArea = useCallback(
+    async (areaId: string) => {
+      if (!projectId) return;
+      await deleteArea(projectId, areaId);
+      setWorkspace((ws) => {
+        if (!ws) return ws;
+        const remaining = ws.areas.filter((a) => a.id !== areaId);
+        return { ...ws, areas: remaining, activeAreaId: ws.activeAreaId === areaId ? (remaining[0]?.id ?? "") : ws.activeAreaId };
+      });
     },
     [projectId]
   );
 
-  const handleConfirm = useCallback(async (msgIndex?: number) => {
-    if (!projectId || !activeAreaId) return;
-    const idx = msgIndex ?? chatMessages.length - 1;
-    const msg = chatMessages[idx];
-    const filePath = msg?.file?.url || msg?.file?.name;
-    if (!filePath) return;
-    try {
-      await addToHistory(projectId, {
-        filePath,
-        areaId: activeAreaId,
-        summary: msg?.meta?.summary ?? '',
+  const addChat = useCallback(
+    (areaId: string) => {
+      if (!workspace) return;
+      setMobileNav(false);
+      setFocusKey((k) => k + 1);
+      // Un chat vacío ya sirve como chat nuevo.
+      if (areaId === workspace.activeAreaId && !loading && !sending && messages.length === 0) return;
+      const area = workspace.areas.find((a) => a.id === areaId);
+      if (!area) return;
+      const id = newId();
+      const chats = [...area.chats, { id, name: nextName("Chat", area.chats.map((c) => c.name)), pinned: false }];
+      commit({
+        ...workspace,
+        activeAreaId: areaId,
+        areas: workspace.areas.map((a) => (a.id === areaId ? { ...a, chats, activeChatId: id } : a)),
       });
-      setChatMessages((prev) =>
-        prev.map((m, i) =>
-          i === idx && m.meta?.complete
-            ? { ...m, meta: { ...m.meta, complete: false } }
-            : m
-        )
-      );
-    } catch (err) {
-      console.error("Confirm failed:", err);
-    }
-  }, [projectId, activeAreaId, chatMessages]);
+    },
+    [workspace, commit, loading, sending, messages.length]
+  );
 
-  const handleDeny = useCallback((msgIndex?: number) => {
-    setChatMessages((prev) => {
-      const idx = msgIndex ?? prev.length - 1;
-      return prev.map((m, i) =>
-        i === idx && m.meta?.complete
-          ? { ...m, meta: { ...m.meta, complete: false } }
-          : m
-      );
-    });
+  const renameChat = useCallback(
+    (areaId: string, chatId: string, name: string) => {
+      if (!workspace) return;
+      commit({
+        ...workspace,
+        areas: workspace.areas.map((a) =>
+          a.id === areaId ? { ...a, chats: a.chats.map((c) => (c.id === chatId ? { ...c, name } : c)) } : a
+        ),
+      });
+    },
+    [workspace, commit]
+  );
+
+  const removeChat = useCallback(
+    async (areaId: string, chatId: string) => {
+      if (!projectId) return;
+      await deleteChat(projectId, areaId, chatId);
+      setWorkspace((ws) => {
+        if (!ws) return ws;
+        return {
+          ...ws,
+          areas: ws.areas.map((a) => {
+            if (a.id !== areaId) return a;
+            const chats = a.chats.filter((c) => c.id !== chatId);
+            return { ...a, chats, activeChatId: a.activeChatId === chatId ? (chats[0]?.id ?? "") : a.activeChatId };
+          }),
+        };
+      });
+    },
+    [projectId]
+  );
+
+  // ── Chat ────────────────────────────────────────────────
+
+  const send = useCallback(
+    (text: string, files: File[]) => {
+      if (activeArea && activeChat && messages.length === 0 && DEFAULT_CHAT_NAME.test(activeChat.name)) {
+        const title = titleFrom(text || files[0]?.name || "");
+        if (title) renameChat(activeArea.id, activeChat.id, title);
+      }
+      setDraft("");
+      void sendMessage(text, files);
+    },
+    [activeArea, activeChat, messages.length, renameChat, sendMessage]
+  );
+
+  const pickSuggestion = useCallback((prompt: string) => {
+    setDraft(prompt);
+    setFocusKey((k) => k + 1);
   }, []);
 
-  const handleRetry = useCallback((msgIndex: number) => {
-    setChatMessages((prev) => {
-      const errMsg = prev[msgIndex];
-      if (!errMsg) return prev;
-      // Find the user message before this error
-      let userContent = "";
-      for (let j = msgIndex - 1; j >= 0; j--) {
-        if (prev[j].role === "user") {
-          userContent = prev[j].content;
-          break;
-        }
-      }
-      if (!userContent) return prev;
-
-      // Remove the error message
-      const filtered = prev.filter((_, i) => i !== msgIndex);
-
-      // Re-send
-      setInputText(userContent);
-      setTimeout(() => {
-        setInputText("");
-        setLoading(true);
-        const allMessages = [...filtered, { role: "user", content: userContent }].map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
-        sendMessage(projectId, {
-          messages: allMessages,
-          areaId: activeAreaId,
-          chatId: activeChatId,
-        })
-          .then((res) => {
-            const assistantMsg: ChatMessage = {
-              role: "assistant",
-              content: res.content,
-              ts: Date.now(),
-              file: res.file as ChatMessage["file"],
-              meta: res.meta as ChatMessage["meta"],
-            };
-            setChatMessages((prev2) => [...prev2, assistantMsg]);
-          })
-          .catch((err2) => {
-            const e2 = err2 as Error & Required<ApiErrorBody>;
-            const errorHuman = e2.errorHuman;
-            setChatMessages((prev2) => [
-              ...prev2,
-              {
-                role: "assistant",
-                content: "",
-                ts: Date.now(),
-                error: errorHuman?.title ? errorHuman : { title: "Error inesperado", hint: "Algo salió mal. Reintentá o cambiá de modelo.", codes: [e2.upstreamStatus || 502].filter(Boolean), retriable: e2.retriable ?? false },
-              },
-            ]);
-          })
-          .finally(() => setLoading(false));
-      }, 0);
-
-      return filtered;
-    });
-  }, [projectId, activeAreaId, activeChatId]);
-
-  const handleFetchModels = useCallback(async (provider?: Provider) => {
-    const p = provider ?? setupProvider;
-    const key = setupApiKey.trim();
-    if (!key && !(providersInfo[p]?.configured)) {
-      setSetupError("Ingresa una API key primero");
-      return;
-    }
-    setModelsLoading(true);
-    setSetupError("");
-    try {
-      // Si hay API key nueva en el input, primero persistirla en backend
-      // para que getModelsForProvider pueda usarla.
-      if (key && !(providersInfo[p]?.configured)) {
-        await setProviderKey(p, key);
-        const { providers } = await getProviders();
-        setProvidersInfo(providers);
-      }
-      const { models: modelList } = await fetchModels(p);
-      setModels(modelList);
-      setModelsFetched(true);
-      if (modelList.length > 0 && !setupModel) {
-        setSetupModel(modelList[0].id);
-      }
-    } catch (err) {
-      setSetupError(`Error al cargar modelos: ${err instanceof Error ? err.message : "API key inválida"}`);
-    } finally {
-      setModelsLoading(false);
-    }
-  }, [setupApiKey, setupProvider, providersInfo, setupModel]);
-
-  const handleSaveSetup = useCallback(async () => {
-    if (!setupApiKey.trim()) {
-      setSetupError("Ingresa una API key");
-      return;
-    }
-    setSetupSaving(true);
-    setSetupError("");
-    try {
-      await saveSetup(setupApiKey.trim(), setupModel || undefined, setupProvider);
-      setSetupMode(false);
-      window.location.reload();
-    } catch (err) {
-      setSetupError(`Error: ${err instanceof Error ? err.message : "No se pudo guardar la config"}`);
-    } finally {
-      setSetupSaving(false);
-    }
-  }, [setupApiKey, setupModel, setupProvider]);
-
-  const handleChangeModel = useCallback(async (model: string) => {
-    try {
-      await updateModel(model, activeProvider);
-      setCurrentModel(model);
-      // persistir modelo por provider en localStorage
+  const download = useCallback(
+    async (file: ChatFile) => {
       try {
-        const saved = JSON.parse(localStorage.getItem("modelOverrides") || "{}");
-        saved[activeProvider] = model;
-        localStorage.setItem("modelOverrides", JSON.stringify(saved));
-      } catch { /* ignore */ }
-    } catch (err) {
-      console.error("Error cambiando modelo:", err);
-    }
-  }, [activeProvider]);
+        await saveFileToDisk(projectId, file.url, file.name);
+      } catch {
+        notify(`No se pudo descargar ${file.name}`);
+      }
+    },
+    [projectId, notify]
+  );
 
-  const handleProviderChange = useCallback(async (provider: Provider) => {
-    if (!providersInfo[provider]?.configured) return;
-    try {
-      await setProviderApi(provider);
-      // recargar modelo preferido para este provider
-      let modelOverride = "";
+  const saveFile = useCallback(
+    async (messageId: string, file: ChatFile) => {
+      if (!activeAreaId) return;
       try {
-        const saved = JSON.parse(localStorage.getItem("modelOverrides") || "{}");
-        modelOverride = saved[provider] || "";
-      } catch { /* ignore */ }
-      const newModel = modelOverride || providersInfo[provider]?.model || "";
-      setCurrentModel(newModel);
-      setActiveProvider(provider);
-      setModels([]);
-      setModelsFetched(false);
-      // refresh providers
-      const { providers } = await getProviders();
-      setProvidersInfo(providers);
-    } catch (err) {
-      console.error("Error cambiando provider:", err);
-    }
-  }, [providersInfo]);
+        await addToHistory(projectId, { filePath: file.url, areaId: activeAreaId, summary: file.summary ?? undefined });
+        markFileSaved(messageId, file.url);
+        setHistoryVersion((v) => v + 1);
+        notify("Guardado en el historial");
+      } catch {
+        notify("No se pudo guardar en el historial");
+      }
+    },
+    [projectId, activeAreaId, markFileSaved, notify]
+  );
 
-  const handleSaveProviderKey = useCallback(async (provider: Provider, apiKey: string) => {
-    await setProviderKey(provider, apiKey);
-    // refresh providers info
-    const { providers } = await getProviders();
-    setProvidersInfo(providers);
-    // si key guardada es del setup provider, activarla para comienzo
-    if (setupMode) {
-      setSetupProvider(provider);
-    }
-  }, [setupMode]);
+  // ── Paneles ─────────────────────────────────────────────
 
-  const handleFetchModelsInApp = useCallback(async (provider?: Provider) => {
-    const p = provider ?? activeProvider;
-    setModelsLoading(true);
-    try {
-      const { models: modelList } = await fetchModels(p);
-      setModels(modelList);
-      setModelsFetched(true);
-    } catch (err) {
-      console.error("Error cargando modelos:", err);
-    } finally {
-      setModelsLoading(false);
-    }
-  }, [activeProvider]);
+  const toggleNav = useCallback(() => {
+    if (window.matchMedia(MOBILE_QUERY).matches) setMobileNav((v) => !v);
+    else setNavHidden((v) => !v);
+  }, [setNavHidden]);
 
-  if (setupMode) {
-    const initProviders: Record<Provider, ProviderInfo> =
-      Object.keys(providersInfo).length > 0
-        ? providersInfo
-        : ({} as Record<Provider, ProviderInfo>);
+  const openPanel = useCallback((tab: PanelTab) => {
+    setPanel((p) => (p.open && p.tab === tab ? { ...p, open: false } : { open: true, tab }));
+  }, []);
+  const changePanelTab = useCallback((tab: PanelTab) => setPanel({ open: true, tab }), []);
+  const closePanel = useCallback(() => setPanel((p) => ({ ...p, open: false })), []);
+  const closePreview = useCallback(() => setPreview(null), []);
+  const closeModels = useCallback(() => setModelOpen(false), []);
+  const openModels = useCallback(() => setModelOpen(true), []);
+  const newChat = useCallback(() => {
+    if (activeAreaId) addChat(activeAreaId);
+  }, [activeAreaId, addChat]);
+
+  const { selectModel } = models;
+  const finishSetup = useCallback(
+    async (provider: Provider, model: string) => {
+      await selectModel(provider, model);
+      setSetupDone(true);
+    },
+    [selectModel]
+  );
+
+  // ── Render ──────────────────────────────────────────────
+
+  if (!models.status) {
+    return models.error ? (
+      <Splash error="No hay conexión con la API de Tasky" onRetry={() => void models.refresh()} />
+    ) : (
+      <Splash />
+    );
+  }
+
+  if (needsSetup) {
     return (
-      <div className="page">
+      <div className="setup-screen">
+        <span className="brand setup-brand">Tasky</span>
         <ModelSelectorModal
           open
-          isFirstRun
-          providers={initProviders}
-          activeProvider={setupProvider}
-          models={models}
-          modelsLoading={modelsLoading}
-          selectedProvider={setupProvider}
-          selectedModel={setupModel}
-          errorMessage={setupError}
-          pending={setupSaving}
-          onSelectProvider={(p) => setSetupProvider(p)}
-          onChangeModel={(m) => setSetupModel(m)}
-          onFetchModels={(p) => handleFetchModels(p)}
-          onSaveKey={async (p, k) => {
-            await handleSaveProviderKey(p, k);
-          }}
-          onSaveSetup={handleSaveSetup}
+          firstRun
+          providers={models.providers}
+          activeProvider={models.activeProvider}
+          currentModel={models.currentModel}
+          loadModels={models.loadModels}
+          onSaveKey={models.saveKey}
+          chatgpt={models.chatgpt}
+          onSelect={finishSetup}
         />
       </div>
     );
   }
 
-  const activeArea = areas.find((a) => a.id === activeAreaId);
-  const activeAreaName = activeArea?.name || "";
-  const activeChat = activeArea?.chats?.find((c) => c.id === activeChatId);
-  const activeChatName = activeChat?.name || "Chat";
+  if (!workspace) {
+    return initError ? (
+      <Splash
+        error={initError}
+        onRetry={() => {
+          setInitError("");
+          setInitAttempt((n) => n + 1);
+        }}
+      />
+    ) : (
+      <Splash />
+    );
+  }
 
   return (
-    <div className="page">
-      <div className="app-frame" data-collapsed={sidebarCollapsed}>
-      <Topbar
-        collapsed={sidebarCollapsed}
-        onToggle={handleToggleSidebar}
+    <div className="app" data-nav={navHidden ? "hidden" : "shown"} data-mobile-nav={mobileNav ? "open" : "closed"}>
+      <div className="nav-backdrop" aria-hidden="true" onClick={() => setMobileNav(false)} />
+      <Sidebar
         areas={areas}
         activeAreaId={activeAreaId}
         activeChatId={activeChatId}
-        onSelectChat={handleSelectChat}
-        onAddChat={handleAddChat}
-        onRenameChat={handleRenameChat}
-        onDeleteChat={handleDeleteChat}
-        onOpenPanel={handleOpenPanelFromTopbar}
+        onSelectArea={selectArea}
+        onSelectChat={selectChat}
+        onAddArea={addArea}
+        onRenameArea={renameArea}
+        onDeleteArea={removeArea}
+        onAddChat={addChat}
+        onRenameChat={renameChat}
+        onDeleteChat={removeChat}
+        onClose={() => setMobileNav(false)}
       />
-        <Sidebar
-          areas={areas}
-          activeAreaId={activeAreaId}
-          collapsed={sidebarCollapsed}
-          onSelectArea={handleSelectArea}
-          onOpenPanel={handleOpenPanel}
-          onAddArea={handleAddArea}
-          onRenameArea={handleRenameArea}
-          onDeleteArea={handleDeleteArea}
+
+      <main className="main">
+        <Topbar
+          areaName={activeArea?.name ?? ""}
+          chatName={activeChat?.name ?? ""}
+          panelTab={panel.open ? panel.tab : null}
+          onToggleNav={toggleNav}
+          onNewChat={newChat}
+          onOpenPanel={openPanel}
         />
-        <main className="chat" data-panel={sidePanelOpen ? "open" : "closed"}>
-          <SidePanel
-            open={sidePanelOpen}
-            tab={sidePanelTab}
-            area={activeArea || null}
-            projectId={projectId}
-            treeEntries={treeEntries}
-            generatedHistory={generatedHistory}
-            rulesContent={rulesContent}
-            onChangeTab={handleChangeSidePanelTab}
-            onClose={handleCloseSidePanel}
-            onUpdateRules={handleUpdateRules}
-            onRefreshInfo={handleRefreshInfo}
-            onUploadContextFile={handleUploadContextFile}
-            onDeleteContextFile={handleDeleteContextFile}
-          />
-          <ChatPanel
-            areaName={activeAreaName}
-            chatName={activeChatName}
-            messages={chatMessages}
-            loading={loading}
-            onConfirm={handleConfirm}
-            onDeny={handleDeny}
-            onDownload={handleDownload}
-            onRetry={handleRetry}
-          />
-          <Composer
-            value={inputText}
-            onChange={setInputText}
-            onSend={handleSend}
-            onAttach={handleAttach}
-          />
-          {!setupMode && (
-            <>
-              <ModelBar
-                activeProvider={activeProvider}
-                providers={providersInfo}
-                currentModel={currentModel}
-                onOpen={() => setShowConfigModal(true)}
-              />
-              <ModelSelectorModal
-                open={showConfigModal}
-                providers={providersInfo}
-                activeProvider={activeProvider}
-                models={models}
-                modelsLoading={modelsLoading}
-                selectedProvider={activeProvider}
-                selectedModel={currentModel}
-                onClose={() => setShowConfigModal(false)}
-                onSelectProvider={handleProviderChange}
-                onChangeModel={handleChangeModel}
-                onFetchModels={handleFetchModelsInApp}
-                onSaveKey={handleSaveProviderKey}
-              />
-            </>
-          )}
-        </main>
+        <ChatPanel
+          key={`${activeAreaId}:${activeChatId}`}
+          areaName={activeArea?.name ?? ""}
+          messages={messages}
+          loading={loading}
+          sending={sending}
+          onPickSuggestion={pickSuggestion}
+          onRegenerate={regenerate}
+          onPreview={setPreview}
+          onDownload={download}
+          onSaveFile={saveFile}
+        />
+        <Composer
+          value={draft}
+          onChange={setDraft}
+          onSend={send}
+          onStop={stop}
+          sending={sending}
+          disabled={!activeChatId}
+          canSubmit={!loading}
+          focusKey={focusKey}
+          modelSlot={<ModelTrigger provider={models.activeProvider} model={models.currentModel} onOpen={openModels} />}
+          effortSlot={
+            <ReasoningSelect
+              levels={reasoningLevels}
+              value={reasoningEffort}
+              defaultLevel={models.capabilities?.defaultReasoningLevel}
+              onChange={(effort) => setEffortSelections((prev) => withEffort(prev, modelEffortKey, effort))}
+            />
+          }
+        />
+      </main>
+
+      <SidePanel
+        open={panel.open}
+        tab={panel.tab}
+        area={activeArea}
+        projectId={projectId}
+        refreshKey={`${fileCount}:${historyVersion}`}
+        onChangeTab={changePanelTab}
+        onClose={closePanel}
+        onPreview={setPreview}
+        onDownload={download}
+      />
+
+      {preview && <FilePreview key={preview.url} projectId={projectId} file={preview} onClose={closePreview} onDownload={download} />}
+
+      {modelOpen && (
+        <ModelSelectorModal
+          open
+          providers={models.providers}
+          activeProvider={models.activeProvider}
+          currentModel={models.currentModel}
+          loadModels={models.loadModels}
+          onSaveKey={models.saveKey}
+          chatgpt={models.chatgpt}
+          onSelect={selectModel}
+          onClose={closeModels}
+        />
+      )}
+
+      <div className="toast-region" role="status" aria-live="polite">
+        {toast && <div className="toast">{toast}</div>}
       </div>
     </div>
   );

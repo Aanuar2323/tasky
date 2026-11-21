@@ -96,6 +96,12 @@ describe('storage.js', async () => {
       assert.ok(history.isDirectory());
     });
 
+    it('la plantilla de reglas no impone límites artificiales y se reconoce como plantilla', async () => {
+      const content = await fs.readFile(path.join(projRoot, 'rules.md'), 'utf8');
+      assert.ok(!content.includes('10 filas'));
+      assert.ok(content.includes('**Instrucciones:**'));
+    });
+
     it('creates default rules.md', async () => {
       const content = await fs.readFile(path.join(projRoot, 'rules.md'), 'utf8');
       assert.ok(content.includes('Reglas globales'));

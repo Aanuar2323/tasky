@@ -1,425 +1,279 @@
-# Tasky — Plataforma Automatizada de Tareas con IA
+# Tasky — Espacio de trabajo con IA
 
-**Tasky** es una aplicacion _Full-Stack_ (Node.js + Next.js) disenada para organizar, automatizar y resolver tareas mediante un asistente de IA integrado. Inspirada en workflows autonomos, soporta areas de trabajo con chats independientes, reglas por area, gestion de archivos y generacion de documentos con modelos de **OpenRouter** y **NVIDIA NIM** (ambos intercambiables en caliente desde la UI).
-
----
-
-## Caracteristicas Principales
-
-1. **Gestor de Tareas y Areas de Trabajo:** Organiza tus proyectos por areas funcionales. Cada area tiene sus propias reglas (`ai/layer2/areas/{areaId}/rules.md` con fallback a `rules.md` raiz), chats independientes con CRUD completo (crear, renombrar, eliminar), historial por area y un directorio de archivos dedicado.
-2. **Selector de Chats por Area:** La barra superior (Topbar) contiene un dropdown centrado que muestra solo los chats del area activa. Al pasar el cursor sobre un chat aparece un menu de 3 puntos para renombrar o eliminar (no se puede eliminar el ultimo chat de un area).
-3. **Proveedores de IA Intercambiables:** Tasky soporta **OpenRouter** y **NVIDIA NIM** de primera clase. Desde un unico modal flotante (`ModelSelectorModal`) el usuario configura API keys, carga modelos, cambia el proveedor activo y el modelo en uso sin reiniciar el servidor. La preferencia se persiste en `storage/user-config.json` (`provider`, `model` y keys independientes por proveedor).
-4. **Generacion Automatica de Archivos:** A traves de instrucciones en el chat, la IA es capaz de crear de forma autonomamente documentos complejos como:
-   - Hojas de calculo (`.xlsx`)
-   - Documentos de Word (`.docx`)
-   - Presentaciones PowerPoint (`.pptx`)
-   - Graficos, diagramas y tablas en imagen (`.png`)
-5. **Explorador de Archivos Integrado:** Interfaz grafica (Finder-style) para subir, descargar y organizar los archivos generados o manuales de cada proyecto.
-6. **Contexto IA Enriquecido:** El backend extrae texto plano de archivos de contexto (`.md`, `.txt`, `.json`, `.csv`, `.pdf`, `.docx`,codigo fuente en multiples lenguajes, etc.) mediante `readContextFile` (usando `pdfjs-dist` para PDF y `mammoth` para DOCX). El selector de archivos relevantes hace content-scoring sobre los primeros 500 caracteres de cada archivo, no solo match por nombre.
-7. **Gestion de Reglas Avanzada:** El `SidePanel` incluye menu kebab por regla para editar/eliminar. El parser `rules-parser.ts` soporta tags `enabled` / `disabled` explicitos además del toggle por checkbox.
-8. **Seguridad Robusta:** Incluye defensas contra ataques (DoS, Path Traversal, XSS) mediante _Rate Limiting_, CORS y _Helmet_.
+**Tasky** es una aplicación full-stack (Node.js + Next.js + motor de documentos en Python) para organizar el trabajo por **áreas**, conversar con una IA que conoce los archivos y reglas de cada área, y generar **Word, Excel y PowerPoint** listos para descargar. Funciona con modelos de **OpenRouter**, **NVIDIA NIM** y tu plan de **ChatGPT** (inicio de sesión local), intercambiables en caliente desde la interfaz.
 
 ---
 
-## Arquitectura del Repositorio (Donde esta cada cosa)
+## Qué hace
 
-El proyecto funciona como un **Monorepo** y esta dividido en dos partes principales: el backend (`api`) y el frontend (`web`).
+- **Chat en streaming**: las respuestas aparecen a medida que se escriben, con estado visible ("Leyendo contrato.pdf", "Generando informe.docx…"), razonamiento colapsable en modelos que lo exponen, botón para detener y opción de regenerar.
+- **Archivos de verdad**: la IA crea `.docx`, `.xlsx` y `.pptx` con contenido completo mediante herramientas (function calling). Si el motor rechaza el contenido, la IA recibe el error y se corrige sola.
+- **Edición y versiones**: los archivos generados se pueden leer, editar (reemplazos, plantillas `{{clave}}`, celdas, filas, hojas, anexos) o regenerar; nunca se pisa un archivo: se crea `informe-v2.docx`.
+- **Contexto con memoria**: reglas activas del área, archivos del área recuperados por relevancia (BM25 a nivel de fragmento), adjuntos del chat (PDF, Word, Excel, PowerPoint, texto e imágenes para modelos con visión), archivos generados y un resumen automático cuando la conversación ya no entra en la ventana del modelo.
+- **Compatible con muchos modelos**: detecta capacidades (contexto, salida máxima, herramientas, visión, razonamiento) y se adapta en caliente a lo que cada modelo acepta.
+- **Vista previa** de documentos, planillas y presentaciones sin salir de la app.
+
+---
+
+## Arquitectura
 
 ```text
-task/
-|
-+-- apps/
-|   +-- api/                          # Backend en Node.js + Express
-|   |   +-- src/
-|   |   |   +-- index.js              # Punto de entrada, rutas REST, seguridad
-|   |   |   +-- storage.js            # Logica del File System local (safeJoin, scaffold)
-|   |   |   +-- llm-client.js         # Cliente unificado OpenRouter / NVIDIA
-|   |   |   +-- config.js             # Gestion de configuracion del usuario (API key UI)
-|   |   |   +-- tools.js              # Herramientas function-calling para el LLM
-|   |   |   +-- generators/           # Scripts generadores de archivos binarios
-|   |   +-- tests/                    # Tests unitarios (node:test)
-|   |   |   +-- storage.test.js       # Tests de storage.js
-|   |   |   +-- tools.test.js         # Tests de tools.js
-|   |   |   +-- api.test.js           # Tests de endpoints REST
-|   |   +-- .env.example              # Template de variables de entorno
-|   |   +-- package.json
-|   +-- web/                          # Frontend Next.js 16 + React 19 + TypeScript
-|       +-- app/
-|       |   +-- layout.tsx            # Root layout con CSS globals
-|       |   +-- page.tsx              # Pagina principal (setup + workspace)
-|       |   +-- globals.css           # Tailwind base
-|       |   +-- workspace.css         # Design system Tasky (CSS custom, design tokens en :root)
-|       |   +-- lib/
-|       |   |   +-- api.ts            # Cliente HTTP para backend Express (tipos Provider/ProviderInfo)
-|       |   |   +-- rules-parser.ts   # Parseo/stringify de reglas Markdown (soporta tags enabled/disabled)
-|       |   +-- components/
-|       |       +-- Topbar.tsx        # Barra superior con selector de chats por area
-|       |       +-- Sidebar.tsx       # Panel lateral con areas de trabajo
-|       |       +-- ChatPanel.tsx     # Panel de chat con mensajes IA
-|       |       +-- Composer.tsx      # Input de mensajes con attachments
-|       |       +-- ModelBar.tsx      # Trigger pill unico (provider + modelo) que abre ModelSelectorModal
-|       |       +-- ModelSelectorModal.tsx  # Modal flotante unificado: setup inicial + cambio provider/modelo
-|       |       +-- SidePanel.tsx     # Panel Info/Historial/Reglas (por area) con kebab menu en reglas
-|       |       +-- MarkdownRenderer.tsx  # Renderizado Markdown -> HTML
-|       +-- .env.example              # Template de variables de entorno
-|       +-- next.config.ts            # output: "standalone" para deploy Docker/self-contained
-|       +-- tsconfig.json
-|       +-- package.json
-|
-+-- storage/                          # Directorio (gitignored) — datos del usuario
-+-- security.md                       # Documentacion oficial sobre ciberseguridad
-+-- package.json                      # Gestor de dependencias global del monorepo
+apps/
+  api/                         Backend Express 5 (Node 22+)
+    src/
+      index.js                 Rutas REST + SSE
+      storage.js               Persistencia en disco, ids y nombres seguros
+      config.js                user-config.json (keys y modelo por proveedor)
+      preview.js               Vista previa de docx/xlsx/pptx/pdf/texto
+      llm/
+        providers.js           OpenRouter / NVIDIA NIM / ChatGPT, proveedor activo, modelo por proveedor
+        chatgpt-auth.js        Sign in with ChatGPT: OAuth + PKCE, ID token, credenciales, refresh, logout
+        responses.js           Responses API de ChatGPT: conversión, streaming SSE, tools con namespace, modelos
+        capabilities.js        Perfil de cada modelo (catálogo + heurísticas + aprendizaje)
+        client.js              Chat completions con streaming y reintentos adaptativos
+        normalize.js           <think>, razonamiento y tool calls escritas como texto
+        errors.js              Clasificación de errores y mensajes para la UI
+      context/
+        extract.js             Texto de PDF/DOCX/PPTX/XLSX/texto con caché
+        xlsx-reader.js         Lector XLSX tolerante (Excel, LibreOffice, openpyxl…)
+        retrieval.js           Fragmentos + BM25
+        budget.js              Presupuesto de tokens por sección
+        project.js             Reglas activas, resúmenes, archivos del área y generados
+        history.js             Historial desde .jsonl, recorte y compactación
+      chat/
+        service.js             Turno de chat: contexto → loop agente → persistencia
+        prompt.js              System prompt (parte estable primero)
+        tools.js               generate_file, edit_file, read_file
+        protocol.js            Protocolo de texto (```tasky-file```) y parser legacy
+        sse.js                 Server-Sent Events
+      generators/docengine.js  Cliente del CLI Python (nombres seguros, versiones, fuente)
+    docengine/                 CLI Python: normalización + pydantic + builders
+      cli.py                   generate|edit <docx|xlsx|pptx> (stdin JSON → stdout binario)
+      normalize.py             Alias, markdown, números/fechas en texto, temas
+      schemas/                 Pydantic v2 con uniones discriminadas
+      builders/                docx/xlsx/pptx + editores
+      utils/                   markdown, reemplazo entre runs, estilos
+      tests/                   unittest
+    tests/                     node:test (unitarios + e2e contra un LLM simulado)
+  web/                         Next.js 16 + React 19 + TypeScript
+    app/
+      page.tsx                 Shell de la app (setup y workspace)
+      hooks/useChat.ts         Estado del chat, streaming, detener, regenerar
+      lib/api.ts, lib/sse.ts   Cliente HTTP y lector SSE
+      components/              Chat, mensajes, tarjetas de archivo, vista previa,
+                               composer con adjuntos, selector de modelos, paneles
+      workspace.css            Sistema visual (tokens, responsive, movimiento)
+docker/                        Imagen única (API + Web + Python)
 ```
 
-### Estructura de Almacenamiento Local (`storage/`)
-
-A diferencia de aplicaciones tradicionales con SQL, _Tasky_ utiliza el sistema de archivos local para persistir el estado de forma limpia:
+### Flujo de un mensaje
 
 ```text
-storage/
-+-- user-config.json                  # Config de providers (gitignored)
-+-- users/default/projects/<projectId>/
-    +-- info/
-    |   +-- areas.json                # Define la jerarquia de Areas y Chats
-    +-- rules.md                      # Reglas globales del proyecto (fallback del area)
-    +-- ai/
-    |   +-- layer1/
-    |   |   +-- 00-role-and-flow.md  # Capa 1: Rol y orden de ejecucion
-    |   +-- layer2/
-    |   |   +-- summary.md            # Capa 2: Resumen global del proyecto
-    |   |   +-- areas/
-    |   |       +-- <areaId>/
-    |   |           +-- summary.md    # Resumen del area
-    |   |           +-- rules.md      # Reglas del area (independientes por area)
-    |   +-- layer3/
-    |       +-- qa.md                 # Capa 3: QA/Testing gate
-    +-- chat/
-    |   +-- areas/
-    |       +-- <areaId>/
-    |           +-- <chatId>.jsonl    # Historial de chat (una linea por mensaje)
-    +-- history/
-    |   +-- areas/
-    |       +-- <areaId>/
-    |           +-- files/            # Archivos completados del area
-    +-- tasks/
-    |   +-- inbox/                    # Tareas pendientes de completar
-    |   +-- history/                  # Tareas completadas
-    +-- files/                        # Todos los archivos generados y subidos por el usuario
-        +-- generated/               # Archivos generados por la IA
+UI (useChat) ──POST /chat (SSE)──► service.runChat
+                                     ├─ guarda mensaje y adjuntos (files/uploads/<área>/<chat>/)
+                                     ├─ perfil del modelo (capabilities)
+                                     ├─ contexto dentro del presupuesto (budget):
+                                     │    reglas activas · índice de archivos · fragmentos BM25
+                                     │    archivos generados · adjuntos · historial (+ resumen)
+                                     ├─ loop agente (≤ 5 pasos, streaming)
+                                     │    tools nativas ─► generate_file / edit_file / read_file
+                                     │    sin tools    ─► bloques ```tasky-file``` en el texto
+                                     └─ persiste respuesta (texto, archivos, uso) y compacta si hace falta
+Eventos SSE: start · status · reasoning · delta · file · done · error
 ```
 
-### Schema de `user-config.json`
+### Compatibilidad de modelos
 
-```jsonc
-{
-  "openrouterApiKey": "sk-or-v1-..." | null,
-  "nvidiaApiKey":     "nvapi-..."     | null,
-  "provider":          "openrouter"   | "nvidia" | null,
-  "model":             "openai/gpt-oss-120b:free" | null   // modelo activo del provider seleccionado
-}
+| Situación | Qué hace Tasky |
+|---|---|
+| Modelo con function calling | Herramientas nativas (`generate_file`, `edit_file`, `read_file`) |
+| Modelo sin tools (o 404 "No endpoints found that support tool use") | Cambia al protocolo de texto y recuerda la capacidad para ese modelo |
+| Tool calls escritas como texto (Hermes/Qwen `<tool_call>`, Mistral `[TOOL_CALLS]`, DeepSeek, Llama `<\|python_tag\|>`, JSON suelto) | Las detecta, las ejecuta y las oculta del texto visible |
+| Razonamiento (`reasoning`, `reasoning_content`, `<think>`) | Lo separa del contenido y la UI lo muestra colapsado |
+| `temperature` no soportada | La omite y lo aprende |
+| `max_tokens` o contexto excedido | Reduce la salida según el mensaje del proveedor |
+| 402 "can only afford N" | Reintenta con menos tokens |
+| 429 / 5xx / red | Hasta 2 reintentos con `retry-after` o backoff |
+| Modelo con visión | Las imágenes adjuntas viajan como `image_url` |
+
+Lo aprendido se guarda en `storage/model-capabilities.json`. Cada proveedor recuerda su propio modelo (`user-config.json → models`).
+
+### Generación de archivos (docengine)
+
+Node lanza `python3 apps/api/docengine/cli.py generate <fmt>` por proceso: stdin = JSON, stdout = binario. Antes de validar, `normalize.py` corrige lo habitual en modelos: alias de secciones y layouts, `markdown` en lugar de secciones, filas como objetos, números/porcentajes/monedas/fechas escritos como texto, temas con nombres cortos o predefinidos (`corporate`, `modern`, `minimal`, `dark`, `nature`, `warm`). Los errores de validación vuelven al modelo resumidos (`slides.0.chart.type: …`).
+
+- **DOCX**: portada opcional, encabezado/pie con "Página X de Y", markdown inline (negrita, cursiva, código, links), listas anidadas y numeradas que reinician, tablas con encabezado repetido y números alineados, callouts (info/advertencia/éxito/peligro), citas, código, índice.
+- **XLSX**: tablas de Excel reales, números con tipo correcto y formato por columna, anchos por contenido, fila de totales solo en columnas numéricas, encabezado congelado, formato condicional, validaciones y gráficos nativos (barras, líneas, torta, dona, área, dispersión) que referencian el rango real y funcionan en cualquier visor.
+- **PPTX**: 16:9 con banda de acento, tipografía que se ajusta al volumen de texto, sub-viñetas, número de diapositiva y pie, layouts `title`, `agenda`, `content`, `two_columns`, `stats`, `chart`, `table` (se parte en varias diapositivas), `quote`, `section_header`, `closing`, imágenes y `custom`.
+
+Contrato de la herramienta (el contenido va siempre en `data`):
+
+```json
+{ "type": "docx", "filename": "informe_ventas.docx", "summary": "Informe de ventas Q3",
+  "data": { "title": "Informe de ventas", "markdown": "# Resumen\n\nLas ventas crecieron **18 %**…" } }
 ```
-
-`saveUserConfig(partial)` hace merge shallow: nunca pisa keys del otro provider al guardar solo uno. `updateApiConfig({ provider })` del backend actualiza `provider` y persiste.
 
 ---
 
-## Modelo de Datos: Areas y Chats
+## Inicio rápido
 
-Cada proyecto tiene **areas** y cada area tiene **chats** independientes:
+### Docker (recomendado)
 
-```typescript
-interface Area {
-  id: string;
-  name: string;
-  pinned?: boolean;
-  chats: { id: string; name: string; pinned?: boolean }[];
-  activeChatId: string;
-}
-```
-
-- **Reglas** son por area: `ai/layer2/areas/{areaId}/rules.md`
-- **Info (archivos)** se lista desde `ai/layer2/areas/{areaId}/`
-- **Historial** se almacena en `history/areas/{areaId}/files/`
-- **Chat logs** se almacenan en `chat/areas/{areaId}/{chatId}.jsonl`
-- El prompt del sistema inyecta las reglas del area activa, no las globales
-
----
-
-## Seguridad (Cybersecurity)
-
-La API cuenta con protecciones para mitigar ataques ciberneticos y posibles fraudes de saldo en servicios de terceros:
-
-- **Helmet:** Oculta firmas y previene Cross-Site Scripting y ataques MIME.
-- **Rate-Limiting (Escudo IA):** Previene ataques DoS y el agotamiento de saldo en OpenRouter API, limitando estrictamente cuantas peticiones puede hacer una IP por hora.
-- **CORS Restringido:** Previene que otras paginas web roben informacion del usuario (en Produccion).
-- **Defensa Path-Traversal:** Algoritmos como `safeJoin` que evitan la filtracion de rutas del sistema operativo.
-
-> Para los detalles tecnicos profundos, lee el archivo oficial: [`security.md`](./security.md)
-
----
-
-## Inicio rapido
-
-Tasky se puede ejecutar de dos formas. **Docker** es lo mas simple (un comando, sin instalar Node). **npm** es para desarrollo local con hot reload.
-
-### 1. Docker (recomendado)
-
-Requisitos: Docker 24+ con Compose v2. No necesitas Node ni npm instalados.
+Requisitos: Docker 24+ con Compose v2.
 
 ```bash
 git clone https://github.com/Aanuar2323/tasky.git
 cd tasky
 docker compose up -d --build
+docker compose ps                 # 'healthy' tras ~25-30 s
+curl http://localhost:8787/health # {"ok":true}
 ```
 
-Eso construye una sola imagen `tasky` con API + Web y levanta un contenedor. Ambos procesos corren dentro via un entrypoint ligero (`docker/entrypoint.mjs`).
+Abrí http://localhost:3000 y configurá la API key en el diálogo inicial.
 
-Verifica que este **healthy** y que responda:
+| Puerto | Servicio |
+|---|---|
+| 3000 | Frontend (Next.js) |
+| 8787 | Backend (Express) |
 
-```bash
-docker compose ps                       # estado 'healthy' tras ~25-30s
-curl http://localhost:8787/health        # debe responder {"ok":true}
-```
+`docker compose down` detiene sin borrar `storage/` (bind mount).
 
-Abrí http://localhost:3000 y configura la API key cuando aparezca el modal de setup (ver seccion **Configurar API key** mas abajo).
+### Desarrollo local
 
-| Puerto | Servicio | URL |
-|--------|----------|-----|
-| 3000 | Frontend (Next.js) | http://localhost:3000 |
-| 8787 | Backend (Express) | http://localhost:8787 |
-
-Detener / resetear:
-
-```bash
-docker compose down                     # detiene, NO borra storage/
-docker compose down -v                  # ⚠️ borra volumenes (storage se mantiene en bind mount ./storage)
-```
-
-Detalles completos (variables, persistencia, troubleshooting Docker) en la seccion **[Deploy con Docker](#deploy-con-docker-unico-contenedor)** mas abajo.
-
----
-
-### 2. Desarrollo local (npm)
-
-Requisitos:
-
-| Requisito | Version | Verificar |
-|-----------|---------|-----------|
-| **Node.js** | 22+ | `node --version` |
-| **npm** | 10+ | `npm --version` |
-
-Tasky usa `??`/`||` (ES2021+) y npm workspaces. Node 22 garantiza compatibilidad.
+Requisitos: Node.js 22+, npm 10+, Python 3.11+ con las dependencias del motor:
 
 ```bash
 git clone https://github.com/Aanuar2323/tasky.git
 cd tasky
 npm install
+python3 -m pip install -r apps/api/docengine/requirements.txt
 npm run dev:all
 ```
 
-`npm install` instala todo el monorepo y ejecuta el `postinstall`, que copia los `.env` desde los templates:
-
-- `apps/web/.env.example` -> `apps/web/.env.local`
-- `apps/api/.env.example` -> `apps/api/.env`
-
-No necesitas editar ningun `.env` para empezar. La API key se configura desde la UI.
-
-`npm run dev:all` levanta ambos servicios en paralelo con `concurrently` y hot reload:
-
-| Servicio | URL |
-|----------|-----|
-| Backend (Express) | http://localhost:8787 |
-| Frontend (Next.js) | http://localhost:3000 |
-
-Verifica que el backend responda:
-
-```bash
-curl http://localhost:8787/health
-# Respuesta esperada: {"ok":true}
-```
-
-Si el puerto 3000 o 8787 ya estan en uso, cambialos editando `apps/api/.env` (variable `PORT`) o `apps/web/.env.local` (variable `NEXT_PUBLIC_API_BASE_URL`).
-
-**Problema comun:** Si ves `sh: line 1: concurrently: command not found`, las dependencias no se instalaron. Vuelve a ejecutar `npm install`.
+`npm install` copia los `.env` de ejemplo. La API key se configura desde la interfaz: elegí proveedor (OpenRouter o NVIDIA NIM), pegá la clave (o usá [ChatGPT](#chatgpt-plan-de-suscripción)), buscá el modelo (la lista muestra si es gratis, su contexto y si admite herramientas o visión) y empezá.
 
 ---
 
-### Configurar API key (una sola vez, ambos metodos)
+## ChatGPT (plan de suscripción)
 
-Aplica igual para Docker y npm. Abrí http://localhost:3000. Aparecera el **`ModelSelectorModal`** (modal flotante centrado con backdrop blur) en modo setup inicial:
+Tasky puede usar tu plan de ChatGPT con [Sign in with ChatGPT](https://developers.openai.com/siwc) (modo token-sharing para clientes open source, **preview**). Elegí **ChatGPT** en el selector de modelos y pulsá **Continue with ChatGPT**.
 
-1. Selecciona el tab del proveedor: **OpenRouter** o **NVIDIA NIM**.
-2. Ingresa la API key correspondiente ([OpenRouter](https://openrouter.ai/keys) o NVIDIA NIM).
-3. Haz clic en **Guardar**. El backend la persiste en `storage/user-config.json` sin cambiar el provider activo (`POST /api/provider/keys`).
-4. Opcional: haz clic en **Cargar modelos** para traer el listado desde el provider (`GET /api/models?provider=...`).
-5. Selecciona el modelo deseado.
-6. Haz clic en **Comenzar**. La app recarga y entra en modo workspace.
+**Cómo funciona**
 
-La mismo modal sirve en modo in-app: el boton pill de la `ModelBar` (esquina inferior del composer) lo abre de nuevo para cambiar provider/modelo en caliente. Si el provider destino no esta configurado, el modal permite ingresar la API key sin salir del flow.
+1. La API registra a Tasky con `client_id=dynamic_agent_client` (`agent_name_hint=Tasky` + un `ext_agent_host_id` propio y persistente). ChatGPT devuelve el `client_id` emitido, que se guarda y se reutiliza en los inicios de sesión siguientes de esa cuenta.
+2. Se abre el navegador del sistema en `auth.openai.com` con PKCE (S256), `state` y `nonce` frescos. El callback escucha **solo** en `http://127.0.0.1:<puerto>/auth/callback` (puerto preferido `1455`; si está ocupado se usa otro, la ruta no cambia), valida el `Host` y el `state`, y es de un solo uso. Ninguna ruta acepta URLs de redirección enviadas por el cliente.
+3. Tras canjear el código se valida el ID token (firma contra el JWKS de OpenAI, `iss`, `aud` = client_id emitido, `exp`, `nonce`) y que el token conceda `chatgpt.tokens.use.direct`. Sin ese scope la sesión queda guardada pero el plan figura como no habilitado (**Habilitar plan** repite OAuth con `prompt=consent`).
+4. Las credenciales se guardan en `storage/credentials/chatgpt/` (carpeta `0700`, archivos `0600`, escritura atómica, un archivo por `client_id`). El navegador y los logs nunca ven tokens; el único estado que expone la API es `GET /api/chatgpt/status`.
+5. El access token se renueva cerca de su vencimiento (refresh serializado entre procesos; el refresh token rotado se guarda junto con scopes y expiración). **Cerrar sesión** revoca el refresh token en el `revocation_endpoint` oficial (con reintentos) y borra los tokens locales; conserva el `client_id` y el host id. Si no se confirma la revocación, la UI lo indica.
 
-La key se guarda en `storage/user-config.json` (ignorado por git, nunca se sube). En Docker, este archivo vive en el bind mount `./storage` asi que sobrevive reinicios del contenedor.
+**Inferencia.** `POST https://api.openai.com/v1/responses` con `store: false` y `stream: true`. El prompt del sistema va en `instructions`; el historial y los resultados de herramientas, en `input` (`function_call` / `function_call_output`). Las herramientas locales (`generate_file`, `edit_file`, `read_file`) se agrupan en un namespace `tasky`. Se omiten los campos no admitidos (`temperature`, `max_output_tokens`, `previous_response_id`, `metadata`, `user`, …). El éxito se confirma solo con `response.completed`; `response.failed`, `response.incomplete` y los cortes se tratan por separado, con el código de error y el request ID tal cual.
 
-> Las API keys tambien pueden configurarse via `apps/api/.env` (`OPENROUTER_API_KEY`, `NVIDIA_API_KEY`), pero no es necesario — la interfaz grafica es suficiente y tiene prioridad de lectura.
+**Limitaciones**
+
+- Solo funciona con Tasky ejecutándose **en tu equipo** y el navegador en ese mismo equipo: el callback es `127.0.0.1`. **Dentro de Docker el login está deshabilitado** (el loopback del contenedor no es alcanzable desde tu navegador). Con `network_mode: host` en Linux podés habilitarlo con `TASKY_CHATGPT_ALLOW_CONTAINER=1`. Alternativa (no probada con Docker real): iniciar sesión con la API corriendo en el host sobre el mismo `./storage` que monta el contenedor; el contenedor lee `credentials/chatgpt/` y renueva la sesión sin necesitar el callback.
+- Es una preview: el uso cuenta contra tu plan (revisalo en [chatgpt.com/settings/usage](https://chatgpt.com/settings/usage)) y puede cambiar o dejar de estar disponible. No se admiten generación de imágenes, búsqueda de archivos, Code Interpreter ni MCP alojado.
+- La ventana de contexto y las capacidades (visión, razonamiento) salen del catálogo de la cuenta cuando lo declara; si no, se usan valores conservadores (128K, sin visión).
+- Si desconectás Tasky en la configuración de ChatGPT, la API lo detecta en el siguiente refresh y pide iniciar sesión de nuevo.
 
 ---
 
 ## Tests
 
 ```bash
-npm test
+cd apps/api && npm test                                                     # Node: unitarios + e2e con LLM simulado
+python3 -m unittest discover -s apps/api/docengine/tests -t apps/api/docengine  # Python: normalización, builders, editores
+cd apps/web && npx tsc --noEmit && npx eslint app && npm run build          # Frontend
 ```
 
-Ejecuta los tests del backend (66 tests, 0 fallos esperados):
-
-- `tests/storage.test.js` — CRUD del sistema de archivos, scaffolding, proteccion path traversal
-- `tests/tools.test.js` — Herramientas function-calling del LLM
-- `tests/api.test.js` — Endpoints REST (health, proyectos, areas, archivos, reglas, tareas, seguridad, providers, models, setup con provider)
+Los e2e levantan un servidor OpenAI-compatible falso (`tests/helpers/mock-llm.js`) y cubren streaming, generación de archivos, autocorrección, modelos sin tools, tool calls en texto, lectura de archivos, regeneración, contexto chico, compactación, detener, adjuntos, visión, reglas y vista previa.
 
 ---
 
-### Donde se guardan mis datos
+## API
 
-```
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/health` | `{ ok: true }` |
+| GET | `/api/status` | Estado, proveedor/modelo activos y `capabilities` del modelo |
+| GET/POST | `/api/provider` | Proveedores configurados / cambiar el activo |
+| POST | `/api/provider/keys` | Guardar key de OpenRouter o NVIDIA (ChatGPT no usa key) |
+| GET | `/api/chatgpt/status` | Estado de la sesión de ChatGPT (sin tokens) |
+| POST | `/api/chatgpt/login` | Inicia el login (`{ newAccount?, reconsent? }`); solo desde la UI local |
+| POST | `/api/chatgpt/login/cancel` · `/logout` · `/account` | Cancelar, cerrar sesión (revoca el refresh token), elegir cuenta |
+| GET | `/api/models?provider=` | Modelos con `isFree`, `contextLength`, `tools`, `vision`, `reasoning` |
+| POST | `/api/setup` | Setup inicial (key, modelo, proveedor) |
+| PATCH | `/api/model` | Cambiar el modelo de un proveedor |
+| POST | `/api/projects/:id/chat` | Chat. JSON o multipart (`attachments`). Con `Accept: text/event-stream` responde por SSE. Body: `{ areaId, chatId, message, regenerate? }` |
+| GET | `/api/projects/:id/chatlog?areaId&chatId` | Historial persistido |
+| GET | `/api/projects/:id/preview?path=` | Vista previa (`markdown`, `sheets`, `slides`, `text`, `image`) |
+| GET | `/api/projects/:id/generated?areaId=` | Archivos generados del área |
+| GET | `/api/projects/:id/download?path=` | Descarga |
+| POST | `/api/projects/:id/upload` | Subir archivo (`ai/layer2/areas/<área>` o `files/…`) |
+| POST | `/api/projects/:id/add-to-history` | Guardar un archivo en el historial del área |
+| GET/PUT | `/api/projects/:id/rules` | Reglas globales o del área |
+| GET/PUT | `/api/projects/:id/areas` | Áreas y chats |
+
+---
+
+## Almacenamiento
+
+```text
 storage/
-+-- user-config.json               # Config de providers (openrouterApiKey, nvidiaApiKey, provider, model)
-+-- users/default/projects/default/
-    +-- info/areas.json            # Tus areas y chats
-    +-- chat/                      # Historial de conversaciones
-    +-- files/generated/           # Archivos creados por la IA
+  user-config.json                      keys, proveedor activo y modelo por proveedor
+  model-capabilities.json               capacidades aprendidas por modelo
+  users/default/projects/<proyecto>/
+    info/areas.json                     áreas y chats
+    rules.md                            reglas globales (fallback)
+    ai/layer1/00-role-and-flow.md       instrucciones del proyecto (opcional)
+    ai/layer2/summary.md                resumen del proyecto (opcional)
+    ai/layer2/areas/<área>/             archivos de contexto + reglas y resumen del área
+    ai/layer3/qa.md                     criterios de calidad (opcional)
+    chat/areas/<área>/<chat>.jsonl      historial (+ <chat>.summary.json al compactar)
+    files/generated/                    archivos generados (+ .tasky/<archivo>.json con la fuente)
+    files/uploads/<área>/<chat>/        adjuntos del chat
+    history/areas/<área>/files/         archivos guardados en el historial
 ```
 
-Puedes borrar `storage/` para resetear la app a estado inicial.
+Las plantillas por defecto (reglas, resúmenes, capas) no se envían a la IA mientras no se editen.
 
 ---
 
-## API Reference (Backend)
+## Variables de entorno (backend)
 
-Endpoints clave para integracion/extension:
+| Variable | Default | Descripción |
+|---|---|---|
+| `OPENROUTER_API_KEY` / `NVIDIA_API_KEY` | — | Keys (la interfaz tiene prioridad) |
+| `OPENROUTER_MODEL` / `NVIDIA_MODEL` | — | Modelo inicial por proveedor |
+| `MODEL` | — | Modelo inicial del proveedor activo (compatibilidad) |
+| `OPENROUTER_BASE_URL` / `NVIDIA_BASE_URL` | URLs oficiales | Endpoints OpenAI-compatibles |
+| `TASKY_CHATGPT_CALLBACK_PORT` | `1455` | Puerto preferido del callback de ChatGPT (si está ocupado se usa otro) |
+| `TASKY_CHATGPT_CREDENTIALS_DIR` | `<storage>/credentials/chatgpt` | Carpeta de credenciales de ChatGPT (0700/0600) |
+| `TASKY_CHATGPT_ALLOW_CONTAINER` | — | `1` permite el login dentro de un contenedor con `network_mode: host` |
+| `PORT` | `8787` | Puerto de la API |
+| `CORS_ORIGIN` | `*` (dev) | Orígenes permitidos (coma separada) |
+| `STORAGE_ROOT` | `<repo>/storage` | Carpeta de datos |
+| `APP_URL` | `http://localhost:3000` | Atribución en OpenRouter |
+| `TASKY_MAX_INPUT_TOKENS` | `100000` | Tope de contexto enviado por mensaje |
+| `TASKY_TIMEZONE` | TZ del sistema | Zona horaria para la fecha en el prompt |
+| `TASKY_LLM_IDLE_MS` | `120000` | Corte si el modelo deja de transmitir |
+| `AI_RATE_LIMIT_MAX` / `RATE_LIMIT_MAX` | `120` / `600` | Límites por IP (IA por hora / general cada 15 min) |
+| `DOCENGINE_TIMEOUT_MS` | `90000` | Tiempo máximo del motor de documentos |
+| `PYTHON_BIN` | `python3` | Intérprete para el docengine |
 
-| Metodo | Ruta | Body / Query | Descripcion |
-|--------|------|--------------|-------------|
-| `GET` | `/health` | — | Liveness check. Responde `{ ok: true }` |
-| `GET` | `/api/status` | — | Estado del backend + providers disponibles. Retorna `{ ok, configured, provider, model, providerId, availableProviders, openrouterConfigured, nvidiaConfigured }` |
-| `GET` | `/api/provider` | — | Providers configurados y activo: `{ providers, activeProvider }` |
-| `POST` | `/api/provider` | `{ provider: 'openrouter'\|'nvidia' }` | Cambia el provider activo (persiste). 400 si el provider no tiene key |
-| `POST` | `/api/provider/keys` | `{ provider, apiKey }` | Guarda la API key de un provider sin cambiar el activo |
-| `GET` | `/api/models` | `?provider=openrouter\|nvidia` | Lista modelos disponibles del provider (default: activo) |
-| `POST` | `/api/setup` | `{ apiKey, model?, provider? }` | Setup inicial: guarda key + modelo + provider |
-| `PATCH` | `/api/model` | `{ model, provider? }` | Actualiza solo el modelo activo (sin tocar key) |
-| `POST` | `/api/projects/:id/chat` | `{ messages, areaId, chatId, activeTaskPath? }` | Endpoint principal de chat (rate-limited) |
-
-Precedencia de lectura de API key:
-1. Persistido en `storage/user-config.json` (`openrouterApiKey` / `nvidiaApiKey`).
-2. Variable de entorno (`OPENROUTER_API_KEY` / `NVIDIA_API_KEY`) si no hay persistido.
-
-Seleccion de provider activo por defecto: `user-config.provider` si esta seteado; si no, primer provider con key disponible (OpenRouter > NVIDIA); si ninguno tiene key, `none` y `isConfigured()` retorna `false`.
-
----
-
-## Variables de entorno (referencia)
-
-### Backend (`apps/api/.env`)
-
-| Variable | Obligatoria | Default | Descripcion |
-|----------|-------------|---------|-------------|
-| `OPENROUTER_API_KEY` | Si (sin UI) | — | API key de OpenRouter (fallback si no hay persistido) |
-| `MODEL` | No | `openai/gpt-oss-120b:free` | Modelo por defecto del proveedor activo |
-| `PORT` | No | `8787` | Puerto del servidor Express |
-| `APP_URL` | No | `http://localhost:5173` | URL para atribucion en OpenRouter |
-| `CORS_ORIGIN` | No | `*` (dev) / `https://midominio.com` (prod) | Origen(es) permitido(s) por la API. Lista separada por comas para varios |
-| `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | URL base personalizada de OpenRouter |
-| `NVIDIA_API_KEY` | No | — | API key de NVIDIA NIM (fallback si no hay persistido) |
-| `NVIDIA_BASE_URL` | No | `https://integrate.api.nvidia.com/v1` | URL base de NVIDIA NIM |
-| `STORAGE_ROOT` | No | `<project>/storage/` | Directorio de almacenamiento personalizado |
-| `NODE_ENV` | No | — | `production` activa CORS estricto |
-
-### Frontend (`apps/web/.env.local`)
-
-| Variable | Obligatoria | Default | Descripcion |
-|----------|-------------|---------|-------------|
-| `NEXT_PUBLIC_API_BASE_URL` | No | `http://localhost:8787` | URL base del backend (fallback en `api.ts`) |
+Frontend: `NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:8787`).
 
 ---
 
-## Solucion de problemas
+## Solución de problemas
 
-| Problema | Causa | Solucion |
-|----------|-------|----------|
-| `concurrently: command not found` | Faltan dependencias | Ejecuta `npm run install:all` |
-| Modal de setup no desaparece | API key invalida o backend caido | Verifica `curl http://localhost:8787/health` y que la key sea correcta. Si fallas con NVIDIA, prueba con OpenRouter |
-| El modal muestra "Provider X no configurado" al intentar usarlo | Falta la API key de ese provider | Haz clic en el tab del provider y guarda la API key desde el input |
-| `exports is not defined` | Node < 22 | Actualiza a Node 22+ |
-| Chat responde "Error 401" | API key sin saldo o invalida | Revisa en https://openrouter.ai/keys o en tu dashboard de NVIDIA |
-| `npm run dev:all` falla | Puerto 3000 o 8787 ocupado | Libera los puertos o cambialos |
-| Archivos generados no aparecen | `storage/` no existe | Se crea solo al primer uso, no deberia pasar |
-| Docker: build falla con `EUSAGE npm ci` | Falta lockfile por app | npm workspaces usan el lockfile raiz; asegurate de que `package-lock.json` exista en la raiz del repo |
-| Contenedor arranca y muere | API crashea al inicio | `docker compose logs -f` para ver el trace; suele ser API key invalida o puerto ocupado |
+| Problema | Solución |
+|---|---|
+| "Modelo bloqueado por privacidad" (OpenRouter) | Habilitá los modelos gratuitos en openrouter.ai/settings/privacy o elegí otro modelo |
+| "Límite de peticiones" | Los modelos gratuitos tienen límites por minuto y por día: esperá o cambiá de modelo |
+| "Modelo no disponible" | El ID no existe en ese proveedor: elegilo desde el selector |
+| El modelo no genera archivos | Si no admite herramientas, Tasky usa el modo compatible automáticamente; con modelos muy chicos conviene uno más capaz |
+| "Iniciar sesión con ChatGPT requiere ejecutar Tasky en tu equipo" | Ver [ChatGPT](#chatgpt-plan-de-suscripción): el callback solo existe en `127.0.0.1` |
+| `python_missing` al generar | Instalá Python 3.11+ y `pip install -r apps/api/docengine/requirements.txt` (o definí `PYTHON_BIN`) |
+| `concurrently: command not found` | `npm install` en la raíz |
 
----
-
-## Deploy con Docker (unico contenedor)
-
-Toda la aplicacion (API + Web) corre en un solo contenedor `tasky`. La API expone `8787` y la Web `3000` desde la misma instancia, gestionados por un entrypoint ligero.
-
-### Requisitos
-- Docker 24+ con Compose v2
-- API key (OpenRouter y/o NVIDIA NIM). La podes cargar desde la UI o via `apps/api/.env`
-
-### Comandos
-
-```bash
-# desde la raiz del repo
-docker compose up -d --build      # construye imagen y arranca contenedor
-docker compose ps                  # verifica estado (estado 'healthy' tras ~25s)
-docker compose logs -f tasky       # logs en vivo (API + Web juntos)
-curl http://localhost:8787/health  # debe responder {"ok":true}
-```
-
-Abrí `http://localhost:3000` en el navegador y configura la API key cuando aparezca el modal de setup.
-
-### Variables de entorno clave (precargadas en `docker-compose.yml`)
-
-| Variable | Default contenedor | Descripcion |
-|----------|--------------------|-------------|
-| `PORT` | `8787` | Puerto interno del API |
-| `WEB_PORT` | `3000` | Puerto interno de Next.js |
-| `STORAGE_ROOT` | `/app/storage` | Persistencia montada desde `./storage` |
-| `CORS_ORIGIN` | `http://localhost:3000` | Origen permitido por la API; cambialo si publicas bajo un dominio |
-| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8787` | URL que el navegador usa para hablar con la API |
-
-Las claves de IA se leen de `apps/api/.env` (inyectado por `env_file`). Tambien podes setearlas via UI y se persisten en `storage/user-config.json`.
-
-### Persistencia y reset
-
-```bash
-ls storage/                         # archivos de usuario (proyectos, chats, config)
-docker compose down                 # detiene el contenedor, NO borra storage/
-docker compose down -v              # ⚠️ borra storage/ si estuviera como volumen
-```
-
-Reset suave: borra el contenido de `storage/` (la UI vuelve a estado inicial).
-
-### Actualizar imagen
-
-Tras cambios en el codigo fuente:
-
-```bash
-docker compose up -d --build
-```
-
-### Stop / remove
-
-```bash
-docker compose stop                 # detiene sin borrar
-docker compose down --remove-orphans
-```
-
----
-
-## Lecturas complementarias
-
-- [`security.md`](./security.md) — Documentacion detallada de seguridad y mitigacion de fraudes
-
----
-
-_Desarrollado con altos estandares tecnicos, disenado para escalabilidad y maxima compatibilidad documental._
+Seguridad: ver [`security.md`](./security.md).
