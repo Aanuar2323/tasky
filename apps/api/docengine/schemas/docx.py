@@ -1,8 +1,8 @@
-"""DOCX schema — sections discriminated by `type` field."""
+"""DOCX schema — secciones discriminadas por el campo `type`."""
 
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,6 +11,7 @@ class DocxTheme(BaseModel):
     model_config = ConfigDict(extra="allow")
     primary_color: str | None = None
     dark_color: str | None = None
+    accent_color: str | None = None
     font_family: str | None = None
 
 
@@ -28,6 +29,12 @@ class DocxMeta(BaseModel):
     subject: str | None = None
 
 
+class BulletItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    text: str = ""
+    children: list[Union[str, "BulletItem"]] = Field(default_factory=list)
+
+
 class _BaseSection(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -43,19 +50,19 @@ class ParagraphSection(_BaseSection):
     text: str = ""
     bold: bool | None = None
     italic: bool | None = None
-    font_size: int | None = None
+    font_size: float | None = None
     color: str | None = None
     align: Literal["left", "center", "right", "justify"] | None = None
 
 
 class BulletsSection(_BaseSection):
     type: Literal["bullets"] = "bullets"
-    items: list[str] = Field(default_factory=list)
+    items: list[Union[str, BulletItem]] = Field(default_factory=list)
 
 
 class NumberedSection(_BaseSection):
     type: Literal["numbered"] = "numbered"
-    items: list[str] = Field(default_factory=list)
+    items: list[Union[str, BulletItem]] = Field(default_factory=list)
 
 
 class TableSection(_BaseSection):
@@ -63,6 +70,8 @@ class TableSection(_BaseSection):
     headers: list[str] | None = None
     rows: list[list[Any]] | None = None
     style: str | None = None
+    caption: str | None = None
+    column_widths: list[float] | None = None
 
 
 class QuoteSection(_BaseSection):
@@ -74,14 +83,15 @@ class QuoteSection(_BaseSection):
 class CodeSection(_BaseSection):
     type: Literal["code"] = "code"
     text: str = ""
+    language: str | None = None
 
 
 class ImageSection(_BaseSection):
     type: Literal["image"] = "image"
     image_base64: str | None = None
     image_data: str | None = None
-    width: int | None = None
-    height: int | None = None
+    width: float | None = None
+    height: float | None = None
     caption: str | None = None
 
 
@@ -104,19 +114,30 @@ class PageBreakSection(_BaseSection):
     type: Literal["page_break"] = "page_break"
 
 
-Section = Union[
-    HeadingSection,
-    ParagraphSection,
-    BulletsSection,
-    NumberedSection,
-    TableSection,
-    QuoteSection,
-    CodeSection,
-    ImageSection,
-    HyperlinkSection,
-    TocSection,
-    DividerSection,
-    PageBreakSection,
+class CalloutSection(_BaseSection):
+    type: Literal["callout"] = "callout"
+    text: str = ""
+    title: str | None = None
+    variant: Literal["info", "warning", "success", "danger"] = "info"
+
+
+Section = Annotated[
+    Union[
+        HeadingSection,
+        ParagraphSection,
+        BulletsSection,
+        NumberedSection,
+        TableSection,
+        QuoteSection,
+        CodeSection,
+        ImageSection,
+        HyperlinkSection,
+        TocSection,
+        DividerSection,
+        PageBreakSection,
+        CalloutSection,
+    ],
+    Field(discriminator="type"),
 ]
 
 
@@ -126,6 +147,13 @@ class DocxPayload(BaseModel):
     theme: DocxTheme = Field(default_factory=DocxTheme)
     title: str | None = None
     subtitle: str | None = None
+    cover: bool | dict[str, Any] = False
+    header_text: str | None = None
+    footer_text: str | None = None
+    show_page_numbers: bool = True
     meta: DocxMeta = Field(default_factory=DocxMeta)
     page: PageSetup = Field(default_factory=PageSetup)
     sections: list[Section] = Field(default_factory=list)
+
+
+BulletItem.model_rebuild()

@@ -1,8 +1,25 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseStructuredResponse, normalizeFileGenerated } from '../src/index.js';
+import { TOOLS } from '../src/llm-client.js';
 
-describe('parseStructuredResponse (parser defensivo)', () => {
+const PORT = 9879;
+
+describe('parseStructuredResponse (parser defensivo — fallback legacy for non-tools models)', () => {
+  let server;
+
+  before(async () => {
+    process.env.PORT = String(PORT);
+    const mod = await import('../src/index.js');
+    server = mod.server;
+  });
+
+  after(async () => {
+    delete process.env.PORT;
+    if (server) {
+      await new Promise(resolve => server.close(resolve));
+    }
+  });
 
   describe('1. JSON válido directo', () => {
     it('parsea JSON válido simple', () => {
@@ -133,7 +150,7 @@ describe('parseStructuredResponse (parser defensivo)', () => {
 
   describe('6. JSON con data string (algunos modelos la serializan así)', () => {
     it('fase C parsea data string a objeto', () => {
-      const dataObj = { filename: 'x.docx', title: 'Y' };
+      const dataObj = { filename: 'x.docx', title: 'Y', sections: [{ type: 'heading', text: 'Hola', level: 1 }] };
       const raw = JSON.stringify({
         content: ' listo',
         meta: { complete: true },
@@ -148,6 +165,52 @@ describe('parseStructuredResponse (parser defensivo)', () => {
       assert.ok(fixes.includes('data_string_parsed_to_object'));
     });
   });
+
+  describe('7. DeepSeek tool_call tokens <|tool_call_begin|>', () => {
+    it('recupera fileGenerated de tool_call_begin + JSON completo', () => {
+      const fg = { type: 'docx', filename: 't.docx', data: { filename: 't.docx', title: 'X', sections: [{ type: 'heading', text: 'Hola', level: 1 }] } };
+      const raw = '```\n<|tool_call_begin|>' + JSON.stringify(fg);
+      const r = parseStructuredResponse(raw);
+      assert.ok(r.fileGenerated !== null, 'debe recuperar fileGenerated');
+      assert.equal(r.fileGenerated.type, 'docx');
+      assert.equal(r.fileGenerated.filename, 't.docx');
+      assert.ok(r.parseWarnings.some(w => w.includes('sloss') || w.includes('tool_call')));
+    });
+
+    it('recupera fileGenerated de tool_call_begin + tool_call_end', () => {
+      const fg = { type: 'xlsx', filename: 'x.xlsx', data: { sheets: [{ name: 'S', headers: ['A'], rows: [[1]] }] } };
+      const raw = '<|tool_call_begin|>' + JSON.stringify(fg) + '<|tool_call_end|>';
+      const r = parseStructuredResponse(raw);
+      assert.ok(r.fileGenerated !== null);
+      assert.equal(r.fileGenerated.type, 'xlsx');
+    });
+  });
+
+  describe('8. Wrapper suelto (sin content/meta/fileGenerated)', () => {
+    it('trata {"type":"docx","data":{...}} como fileGenerated directo', () => {
+      const raw = JSON.stringify({ type: 'docx', filename: 't.docx', data: { filename: 't.docx', sections: [{ type: 'heading', text: 'X', level: 1 }] } });
+      const r = parseStructuredResponse(raw);
+      assert.equal(r.parseError, null);
+      assert.ok(r.fileGenerated !== null);
+      assert.equal(r.fileGenerated.type, 'docx');
+      assert.equal(r.content, '');
+    });
+
+    it('no interpreta como sloss si tiene content aunque tenga type', () => {
+      const raw = JSON.stringify({ content: 'listo', meta: { complete: true }, fileGenerated: { type: 'docx', filename: 't.docx', data: { sections: [] } } });
+      const r = parseStructuredResponse(raw);
+      assert.equal(r.content, 'listo');
+      assert.equal(r.fileGenerated.type, 'docx');
+      assert.equal(r.fileGenerated.data.sections.length, 0);
+    });
+
+    it('no trata como sloss si type no es valido', () => {
+      const raw = JSON.stringify({ type: 'pdf', filename: 't.pdf', data: {} });
+      const r = parseStructuredResponse(raw);
+      assert.equal(r.fileGenerated, null);
+      assert.equal(r.content, '');
+    });
+  });
 });
 
 describe('normalizeFileGenerated', () => {
@@ -158,38 +221,38 @@ describe('normalizeFileGenerated', () => {
   });
 
   it('infiere type por extensión de filename', () => {
-    const { fg, fixes } = normalizeFileGenerated({ filename: 't.xlsx', data: {} });
+    const { fg, fixes } = normalizeFileGenerated({ filename: 't.xlsx', data: { sheets: [{ name: 'S', headers: ['A'], rows: [[1]] }] } });
     assert.equal(fg.type, 'xlsx');
     assert.ok(fixes.some(f => f.startsWith('type_inferred')));
   });
 
   it('infiere type por extensión de editPath', () => {
-    const { fg, fixes } = normalizeFileGenerated({ editPath: 'files/generated/t.pptx', editChanges: {} });
+    const { fg, fixes } = normalizeFileGenerated({ editPath: 'files/generated/t.pptx', editChanges: { replace: [{ find: 'a', replace: 'b' }] } });
     assert.equal(fg.type, 'pptx');
     assert.ok(fixes.some(f => f.startsWith('type_inferred')));
   });
 
   it('genera nanoid filename si falta', () => {
-    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', data: { sections: [] } });
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', data: { sections: [{ type: 'heading', text: 'X', level: 1 }] } });
     assert.match(fg.filename, /^docx-.{8}\.docx$/);
     assert.ok(fixes.includes('filename_generated'));
   });
 
   it('appenda extensión si filename no la tiene', () => {
-    const { fg, fixes } = normalizeFileGenerated({ type: 'xlsx', filename: 'sinext', data: {} });
+    const { fg, fixes } = normalizeFileGenerated({ type: 'xlsx', filename: 'sinext', data: { sheets: [{ name: 'S', headers: ['A'], rows: [[1]] }] } });
     assert.equal(fg.filename, 'sinext.xlsx');
     assert.ok(fixes.includes('filename_extension_appended'));
   });
 
   it('no toca filename con extensión correcta', () => {
-    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', data: { sections: [] } });
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', data: { sections: [{ type: 'heading', text: 'X', level: 1 }] } });
     assert.equal(fg.filename, 't.docx');
     assert.ok(!fixes.includes('filename_extension_appended'));
     assert.ok(!fixes.includes('filename_generated'));
   });
 
   it('no aplica fixes si todo está OK', () => {
-    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', data: { sections: [] } });
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', data: { sections: [{ type: 'heading', text: 'X', level: 1 }] } });
     assert.equal(fg.type, 'docx');
     assert.equal(fg.filename, 't.docx');
     assert.equal(fixes.length, 0);
@@ -199,5 +262,162 @@ describe('normalizeFileGenerated', () => {
     const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 'out.docx', editPath: 'files/generated/in.docx', editChanges: { replace: [{ find: 'a', replace: 'b' }] } });
     assert.equal(fg.editPath, 'files/generated/in.docx');
     assert.deepEqual(fg.editChanges.replace[0], { find: 'a', replace: 'b' });
+  });
+});
+
+describe('normalizeFileGenerated — rechazo de data vacía (FASE 2)', () => {
+  it('rechaza data: undefined', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx' });
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_data_skipped'));
+  });
+
+  it('rechaza data: null', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', data: null });
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_data_skipped'));
+  });
+
+  it('rechaza data: {} (objeto vacío)', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', data: {} });
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_data_skipped'));
+  });
+
+  it('rechaza docx con sections: []', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', data: { sections: [] } });
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_docx_sections_skipped'));
+  });
+
+  it('rechaza xlsx con sheets: []', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'xlsx', filename: 't.xlsx', data: { sheets: [] } });
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_xlsx_sheets_skipped'));
+  });
+
+  it('rechaza pptx con slides: []', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'pptx', filename: 't.pptx', data: { slides: [] } });
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_pptx_slides_skipped'));
+  });
+
+  it('acepta docx con sections con texto', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', data: { sections: [{ type: 'heading', text: 'Hola', level: 1 }] } });
+    assert.ok(fg !== null);
+    assert.equal(fg.data.sections.length, 1);
+  });
+
+  it('rechaza edit con editChanges vacío', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', editPath: 'files/x.docx', editChanges: {} });
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_edit_changes_skipped'));
+  });
+
+  it('acepta edit con editChanges válido', () => {
+    const { fg, fixes } = normalizeFileGenerated({ type: 'docx', filename: 't.docx', editPath: 'files/x.docx', editChanges: { replace: [{ find: 'a', replace: 'b' }] } });
+    assert.ok(fg !== null);
+    assert.equal(fg.editChanges.replace[0].find, 'a');
+  });
+});
+
+describe('TOOLS schema (function calling definitions)', () => {
+  it('TOOLS expone generate_file, edit_file y read_file', () => {
+    assert.ok(TOOLS);
+    const names = TOOLS.map(t => t.function.name).sort();
+    assert.deepEqual(names, ['edit_file', 'generate_file', 'read_file']);
+    assert.ok(TOOLS.every(t => t.type === 'function'));
+  });
+
+  it('generate_file requiere type, filename y data (contenido en data)', () => {
+    const gen = TOOLS.find(t => t.function.name === 'generate_file');
+    const params = gen.function.parameters;
+    assert.deepEqual([...params.required].sort(), ['data', 'filename', 'type']);
+    assert.deepEqual(params.properties.type.enum, ['docx', 'xlsx', 'pptx']);
+    assert.ok(params.properties.summary);
+  });
+
+  it('read_file y edit_file requieren path', () => {
+    const read = TOOLS.find(t => t.function.name === 'read_file');
+    const edit = TOOLS.find(t => t.function.name === 'edit_file');
+    assert.ok(read.function.parameters.required.includes('path'));
+    assert.deepEqual([...edit.function.parameters.required].sort(), ['changes', 'path']);
+  });
+});
+
+describe('normalizeFileGenerated — tool_calls integration', () => {
+  it('acepta args de generate_file con sections válidas', () => {
+    const args = { type: 'docx', filename: 't.docx', data: { sections: [{ type: 'heading', text: 'Hola', level: 1 }] } };
+    const { fg, fixes } = normalizeFileGenerated(args);
+    assert.ok(fg !== null);
+    assert.equal(fg.type, 'docx');
+    assert.equal(fg.data.sections.length, 1);
+  });
+
+  it('acepta args de generate_file con sheets válidas', () => {
+    const args = { type: 'xlsx', filename: 't.xlsx', data: { sheets: [{ name: 'S', headers: ['A'], rows: [[1]] }] } };
+    const { fg, fixes } = normalizeFileGenerated(args);
+    assert.ok(fg !== null);
+    assert.equal(fg.type, 'xlsx');
+    assert.equal(fg.data.sheets.length, 1);
+  });
+
+  it('acepta args de generate_file con slides válidas', () => {
+    const args = { type: 'pptx', filename: 't.pptx', data: { slides: [{ layout: 'title', title: 'Hola' }] } };
+    const { fg, fixes } = normalizeFileGenerated(args);
+    assert.ok(fg !== null);
+    assert.equal(fg.type, 'pptx');
+    assert.equal(fg.data.slides.length, 1);
+  });
+
+  it('rechaza generate_file con data vacío', () => {
+    const args = { type: 'docx', filename: 't.docx', data: {} };
+    const { fg, fixes } = normalizeFileGenerated(args);
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_data_skipped'));
+  });
+
+  it('acepta editPath + editChanges válido', () => {
+    const args = { type: 'docx', filename: 'out.docx', editPath: 'files/x.docx', editChanges: { replace: [{ find: 'a', replace: 'b' }] } };
+    const { fg, fixes } = normalizeFileGenerated(args);
+    assert.ok(fg !== null);
+    assert.equal(fg.editPath, 'files/x.docx');
+    assert.deepEqual(fg.editChanges.replace[0], { find: 'a', replace: 'b' });
+  });
+
+  it('rechaza edit con editChanges vacío', () => {
+    const args = { type: 'docx', filename: 't.docx', editPath: 'files/x.docx', editChanges: {} };
+    const { fg, fixes } = normalizeFileGenerated(args);
+    assert.equal(fg, null);
+    assert.ok(fixes.includes('empty_edit_changes_skipped'));
+  });
+});
+
+describe('reasoning_content fallback (for reasoning models)', () => {
+  it('parseStructuredResponse still works as legacy fallback', () => {
+    // This tests that the legacy parser still works when model doesn't use tools
+    const raw = JSON.stringify({
+      content: 'Hola desde legacy',
+      meta: { complete: true, summary: 'test' },
+      fileGenerated: { type: 'docx', filename: 't.docx', data: { sections: [{ type: 'heading', text: 'X', level: 1 }] } }
+    });
+    const r = parseStructuredResponse(raw);
+    assert.equal(r.parseError, null);
+    assert.equal(r.content, 'Hola desde legacy');
+    assert.equal(r.fileGenerated.type, 'docx');
+  });
+});
+
+describe('llm-client tool_calls handling (integration)', () => {
+  it('TOOLS constant is exported from llm-client', async () => {
+    const mod = await import('../src/llm-client.js');
+    assert.ok(mod.TOOLS);
+    assert.equal(mod.TOOLS.length, 3);
+  });
+
+  it('LEGACY_RESPONSE_FORMAT is exported for fallback', async () => {
+    const mod = await import('../src/llm-client.js');
+    assert.ok(mod.LEGACY_RESPONSE_FORMAT);
+    assert.equal(mod.LEGACY_RESPONSE_FORMAT.type, 'json_schema');
   });
 });

@@ -10,12 +10,14 @@ import { getStorageRoot } from './storage.js';
  *   {
  *     openrouterApiKey: string | null,
  *     nvidiaApiKey:      string | null,
- *     provider:          'openrouter' | 'nvidia' | null,
- *     model:             string | null   // modelo activo del provider seleccionado
+ *     provider:          'openrouter' | 'nvidia' | 'chatgpt' | null,
+ *     models:            { openrouter?: string, nvidia?: string, chatgpt?: string }   // modelo recordado por proveedor
+ *                        (ChatGPT no guarda tokens acá: ver llm/chatgpt-auth.js)
+ *     model:             string | null   // legacy: modelo único (pertenece a `provider`)
  *   }
  *
- * `saveUserConfig(partial)` hace merge shallow con la config existente:
- * nunca pisa claves del otro provider al guardar solo uno.
+ * `saveUserConfig(partial)` hace merge shallow con la config existente (y merge
+ * profundo de `models`): nunca pisa claves del otro proveedor al guardar solo uno.
  */
 
 let userConfig = null;
@@ -25,6 +27,7 @@ const DEFAULT_CONFIG = {
   nvidiaApiKey: null,
   provider: null,
   model: null,
+  models: {},
 };
 
 function configFilePath() {
@@ -35,9 +38,10 @@ export function loadUserConfigSync() {
   const filePath = configFilePath();
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
-    userConfig = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    userConfig = { ...DEFAULT_CONFIG, ...parsed, models: { ...(parsed?.models ?? {}) } };
   } catch {
-    userConfig = { ...DEFAULT_CONFIG };
+    userConfig = { ...DEFAULT_CONFIG, models: {} };
   }
   return userConfig;
 }
@@ -50,7 +54,7 @@ export function getUserConfig() {
 }
 
 /**
- * Guarda la config con merge shallow sobre la existente.
+ * Guarda la config con merge sobre la existente.
  * @param {Partial<typeof DEFAULT_CONFIG>} partial
  */
 export async function saveUserConfig(partial) {
@@ -58,15 +62,17 @@ export async function saveUserConfig(partial) {
   userConfig = {
     ...current,
     ...partial,
-    // nunca permitir nulls explícitos que eliminen defaults de merge posteriores
     openrouterApiKey: 'openrouterApiKey' in partial ? partial.openrouterApiKey : current.openrouterApiKey,
     nvidiaApiKey: 'nvidiaApiKey' in partial ? partial.nvidiaApiKey : current.nvidiaApiKey,
     provider: 'provider' in partial ? partial.provider : current.provider,
     model: 'model' in partial ? partial.model : current.model,
+    models: { ...(current.models ?? {}), ...(partial.models ?? {}) },
   };
   const filePath = configFilePath();
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, JSON.stringify(userConfig, null, 2), 'utf8');
+  const tmp = `${filePath}.tmp`;
+  await fsp.writeFile(tmp, JSON.stringify(userConfig, null, 2), 'utf8');
+  await fsp.rename(tmp, filePath);
 }
 
 /** API key de OpenRouter (retrocompat). */
@@ -82,6 +88,19 @@ export function getNvidiaApiKey() {
 /** Modelo guardado (retrocompat). */
 export function getModel() {
   return getUserConfig()?.model || null;
+}
+
+/**
+ * Modelo recordado para un proveedor. El `model` legacy pertenece solo al
+ * proveedor guardado en `provider` (o a OpenRouter si no hay ninguno).
+ * @param {'openrouter'|'nvidia'} provider
+ */
+export function getModelFor(provider) {
+  const cfg = getUserConfig();
+  if (cfg?.models?.[provider]) return cfg.models[provider];
+  const owner = cfg?.provider || 'openrouter';
+  if (cfg?.model && owner === provider) return cfg.model;
+  return null;
 }
 
 /** Provider preferido por el usuario ('openrouter' | 'nvidia' | null). */

@@ -94,6 +94,74 @@ export function safeJoin(root, relPath = '') {
 }
 
 /* ==========================================================
+   Plantillas por defecto (también las usa context/project.js para
+   reconocer contenido sin editar y no mandarlo al modelo)
+   ========================================================== */
+
+export const DEFAULT_GLOBAL_RULES = `# Reglas globales
+
+**Instrucciones:** estas reglas aplican en todas las áreas que no tengan reglas propias. Agregalas desde el panel de reglas o escribilas acá, una por línea.
+
+Ejemplos:
+- "Respondé siempre en español neutro."
+- "Usá montos en pesos argentinos con separador de miles."
+- "Incluí un resumen ejecutivo al inicio de cada informe."
+`;
+
+export const DEFAULT_LAYER1 = `# Capa 1 — Instrucciones del proyecto
+
+**Instrucciones:** escribí acá indicaciones permanentes para la IA en este proyecto: rol, tono, público y formato preferido. Mientras este archivo tenga solo esta plantilla, no se envía a la IA.
+`;
+
+export const DEFAULT_LAYER2_SUMMARY = `# Capa 2 — Resumen general del proyecto
+
+**Instrucciones:** Describe aquí el propósito global del proyecto.
+Este resumen se incluye SIEMPRE, en TODAS las áreas.
+Mantenlo corto (2-4 líneas) para ahorrar tokens.
+
+Ejemplos:
+- "Este proyecto gestiona la documentación de una clínica."
+- "Estamos desarrollando el plan de marketing para Q3."
+- "Proyecto de automatización de informes financieros."
+
+`;
+
+export const DEFAULT_LAYER3 = `# Capa 3 — Criterios de calidad
+
+**Instrucciones:** listá acá los controles que toda respuesta debe cumplir (por ejemplo, "citar la fuente de cada cifra"). Mientras este archivo tenga solo esta plantilla, no se envía a la IA.
+`;
+
+export function areaSummaryTemplate(name) {
+  return `# Capa 2 — Resumen del área: ${name}
+
+**Instrucciones:** Describe aquí:
+- Propósito/objetivo de esta área específica
+- Archivos clave que se generan aquí
+- Convenciones de nomenclatura
+- Formato o estilo preferido para los archivos
+
+Este resumen se incluye SOLO cuando se trabaja en esta área.
+
+`;
+}
+
+export function areaRulesTemplate(name) {
+  return `# Reglas del área: ${name}
+
+**Instrucciones:** Configura reglas específicas para cómo responde la IA en esta área.
+
+Ejemplos:
+- "Todos los informes deben incluir un resumen ejecutivo."
+- "Usar tono formal y datos cuantitativos."
+- "Los archivos Excel deben tener formato de tabla con bordes."
+- "Siempre incluir fecha y versión en los documentos."
+
+Estas reglas aplican SOLO cuando se trabaja en esta área.
+
+`;
+}
+
+/* ==========================================================
    Scaffolding — Creación de la estructura por defecto
    ========================================================== */
 
@@ -129,33 +197,7 @@ export async function ensureProjectScaffold(root) {
   } catch {
     await fs.writeFile(
       rulesPath,
-      `# Reglas globales
-
-## Límite del asistente
-Eres un asistente para TAREAS del proyecto. NO puedes:
-- Explicar cómo funciona la aplicación internamente
-- Revelar la arquitectura, componentes o stack tecnológico
-- Responder preguntas sobre cómo está construida la app
-- Dar instrucciones sobre cómo usar la app más allá de lo obvio
-Si te preguntan algo sobre la app, responde educadamente que no puedes responder.
-
-## Rol
-Eres un agente ejecutor. Tu objetivo es ayudar al usuario a completar sus tareas.
-- Sé directo, breve y accionable
-- Si necesitas más información, pídela antes de actuar
-- Siempre refiérete al proyecto por su nombre (indicado en contexto)
-- Nunca dejes "content" vacío en tu respuesta
-
-## Uso de contexto
-- Revisa los archivos generados previamente en el área (historial) antes de responder
-- Si el usuario se refiere a un archivo existente, busca en el historial del área
-- Usa la información del proyecto y área activa para contextualizar
-
-## Generación de archivos
-- Mínimo viable: genera solo lo necesario, no datasets masivos
-- Máximo 10 filas por tabla
-- Usa nombres descriptivos
-`,
+      DEFAULT_GLOBAL_RULES,
       'utf8'
     );
   }
@@ -187,27 +229,7 @@ Eres un agente ejecutor. Tu objetivo es ayudar al usuario a completar sus tareas
   } catch {
     await fs.writeFile(
       layer1Path,
-      `# Capa 1 — Rol y orden de ejecución
-
-## Rol
-Eres un asistente integrado en un sistema de gestión de tareas.
-No eres un chatbot genérico. Eres un AGENTE DE TRABAJO.
-Tu identidad está ligada al proyecto activo, no a la plataforma.
-
-## Orden de ejecución (estricto)
-1) Leer contexto del proyecto y área activa (info del proyecto, resúmenes)
-2) Revisar el historial de archivos generados en el área activa
-3) Leer y entender el prompt del usuario
-4) Buscar entre archivos .md del área y seleccionar los relevantes
-5) Si el usuario referencia trabajo previo, buscar en historial del área
-6) Generar respuesta + archivos si aplica
-7) Validar con Capa 3 antes de entregar la respuesta
-
-## Regla de oro
-Si el usuario pregunta algo NO relacionado con su proyecto/tarea actual,
-asume buena fe y redirige al contexto del proyecto.
-Si insiste en temas fuera del alcance, corta educadamente y vuelve al trabajo.
-`,
+      DEFAULT_LAYER1,
       'utf8'
     );
   }
@@ -218,18 +240,7 @@ Si insiste en temas fuera del alcance, corta educadamente y vuelve al trabajo.
   } catch {
     await fs.writeFile(
       layer2SummaryPath,
-      `# Capa 2 — Resumen general del proyecto
-
-**Instrucciones:** Describe aquí el propósito global del proyecto.
-Este resumen se incluye SIEMPRE, en TODAS las áreas.
-Mantenlo corto (2-4 líneas) para ahorrar tokens.
-
-Ejemplos:
-- "Este proyecto gestiona la documentación de una clínica."
-- "Estamos desarrollando el plan de marketing para Q3."
-- "Proyecto de automatización de informes financieros."
-
-`,
+      DEFAULT_LAYER2_SUMMARY,
       'utf8'
     );
   }
@@ -240,18 +251,7 @@ Ejemplos:
   } catch {
     await fs.writeFile(
       layer3Path,
-      `# Capa 3 — QA/Testing
-
-## Checklist obligatorio antes de responder
-- [ ] ¿La respuesta es relevante para el proyecto y área activa?
-- [ ] ¿Revisé el historial del área para ver trabajo previo relacionado?
-- [ ] ¿El contenido de "content" NO está vacío? (NUNCA dejar vacío)
-- [ ] Si generé un archivo, ¿el contenido es correcto y válido?
-- [ ] ¿Cumple con las reglas y resúmenes de Capa 2?
-- [ ] ¿Evité mencionar el funcionamiento interno de la app?
-
-Si falla algún punto, corrige antes de responder.
-`,
+      DEFAULT_LAYER3,
       'utf8'
     );
   }
@@ -270,17 +270,7 @@ Si falla algún punto, corrige antes de responder.
       } catch {
         await fs.writeFile(
           areaSummaryPath,
-          `# Capa 2 — Resumen del área: ${area.name ?? area.id}
-
-**Instrucciones:** Describe aquí:
-- Propósito/objetivo de esta área específica
-- Archivos clave que se generan aquí
-- Convenciones de nomenclatura
-- Formato o estilo preferido para los archivos
-
-Este resumen se incluye SOLO cuando se trabaja en esta área.
-
-`,
+          areaSummaryTemplate(area.name ?? area.id),
           'utf8'
         );
       }
@@ -290,19 +280,7 @@ Este resumen se incluye SOLO cuando se trabaja en esta área.
       } catch {
         await fs.writeFile(
           areaRulesPath,
-          `# Reglas del área: ${area.name ?? area.id}
-
-**Instrucciones:** Configura reglas específicas para cómo responde la IA en esta área.
-
-Ejemplos:
-- "Todos los informes deben incluir un resumen ejecutivo."
-- "Usar tono formal y datos cuantitativos."
-- "Los archivos Excel deben tener formato de tabla con bordes."
-- "Siempre incluir fecha y versión en los documentos."
-
-Estas reglas aplican SOLO cuando se trabaja en esta área.
-
-`,
+          areaRulesTemplate(area.name ?? area.id),
           'utf8'
         );
       }
@@ -434,4 +412,55 @@ export async function getUserSkillsPath(userId = 'default') {
   }
 
   return `storage/users/${userId}/${SKILLS_DIR}`;
+}
+
+/* ==========================================================
+   Identificadores y nombres de archivo seguros
+   ========================================================== */
+
+/** IDs de área/chat/proyecto: sin separadores ni puntos (evita rutas). */
+export const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function isValidId(id) {
+  return typeof id === 'string' && ID_RE.test(id);
+}
+
+// eslint-disable-next-line no-control-regex
+const RESERVED_CHARS = /[<>:"|?*\u0000-\u001F\u007F]/g;
+
+/**
+ * Nombre de archivo seguro (cualquier extensión): sin directorios ni
+ * caracteres reservados, ≤ 120 caracteres.
+ */
+export function sanitizeName(name, fallback = 'archivo') {
+  let base = String(name ?? '').replace(/\\/g, '/').split('/').pop() ?? '';
+  base = base.replace(RESERVED_CHARS, '_').replace(/\s+/g, ' ').trim().replace(/^[.\s]+/, '').replace(/[.\s]+$/, '');
+  if (!base) return fallback;
+  if (base.length > 120) {
+    const ext = path.extname(base).slice(0, 12);
+    base = base.slice(0, 120 - ext.length) + ext;
+  }
+  return base;
+}
+
+/**
+ * Guarda un archivo subido en relDir con nombre libre (nombre-2.ext si existe).
+ * @returns {Promise<{name:string, path:string, size:number, type:string|null}>}
+ */
+export async function saveUploadedFile(root, relDir, name, buffer, mime = null) {
+  const dir = safeJoin(root, relDir);
+  await fs.mkdir(dir, { recursive: true });
+  const clean = sanitizeName(name);
+  const ext = path.extname(clean);
+  const stem = clean.slice(0, clean.length - ext.length);
+  for (let n = 1; n < 500; n += 1) {
+    const candidate = n === 1 ? clean : `${stem}-${n}${ext}`;
+    try {
+      await fs.writeFile(path.join(dir, candidate), buffer, { flag: 'wx' });
+      return { name: candidate, path: path.posix.join(relDir, candidate), size: buffer.length, type: mime || null };
+    } catch (e) {
+      if (e?.code !== 'EEXIST') throw e;
+    }
+  }
+  throw new Error(`No se pudo guardar ${clean}`);
 }

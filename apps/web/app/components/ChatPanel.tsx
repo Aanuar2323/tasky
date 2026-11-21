@@ -1,161 +1,99 @@
 "use client";
 
-import { memo, useRef, useEffect } from "react";
-import MarkdownRenderer from "./MarkdownRenderer";
-import ErrorPill from "./ErrorPill";
-import type { ChatMessage } from "../types/chat";
+import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
+import type { ChatFile, ChatMessage } from "../types/chat";
+import EmptyState from "./EmptyState";
+import MessageItem from "./MessageItem";
+import { ArrowDownIcon } from "./icons";
 
 interface ChatPanelProps {
   areaName: string;
-  chatName: string;
   messages: ChatMessage[];
-  loading?: boolean;
-  onConfirm?: (i: number) => void;
-  onDeny?: (i: number) => void;
-  onDownload?: (file: ChatMessage["file"]) => void;
-  onRetry?: (i: number) => void;
+  loading: boolean;
+  sending: boolean;
+  onPickSuggestion: (prompt: string) => void;
+  onRegenerate: () => void;
+  onPreview: (file: ChatFile) => void;
+  onDownload: (file: ChatFile) => void;
+  onSaveFile: (messageId: string, file: ChatFile) => void;
 }
 
-function formatTime(ts?: number) {
-  if (!ts) return "";
-  const d = new Date(ts);
-  return d.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" });
-}
-
-const FILE_DOC_SVG = (
-  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor">
-    <path d="M3 1.5h4l2 2v6.5a.5.5 0 0 1-.5.5h-5.5a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" strokeLinejoin="round" />
-    <path d="M5 6h2M5 7.5h1.5" strokeLinecap="round" />
-  </svg>
-);
-
-const DL_SVG = (
-  <svg viewBox="0 0 11 11" fill="none" stroke="currentColor">
-    <path d="M5.5 1.5v6M3 5l2.5 2.5L8 5M2 9.5h7" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
+const STICK_DISTANCE = 96;
 
 function ChatPanel({
   areaName,
-  chatName,
   messages,
   loading,
-  onConfirm,
-  onDeny,
+  sending,
+  onPickSuggestion,
+  onRegenerate,
+  onPreview,
   onDownload,
-  onRetry,
+  onSaveFile,
 }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const shouldAutoScrollRef = useRef(true);
+  const stickRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+  const lastUserId = [...messages].reverse().find((m) => m.role === "user")?.id;
 
-  useEffect(() => {
+  const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-
-    const onScroll = () => {
-      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      shouldAutoScrollRef.current = distanceToBottom < 48;
-    };
-
-    el.addEventListener("scroll", onScroll);
-    onScroll();
-    return () => el.removeEventListener("scroll", onScroll);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_DISTANCE;
+    stickRef.current = atBottom;
+    setShowJump(!atBottom);
   }, []);
 
-  useEffect(() => {
-    if (scrollRef.current && shouldAutoScrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, loading]);
+  // Al enviar un mensaje nuevo, volver a seguir el final (antes de ajustar el scroll).
+  useLayoutEffect(() => {
+    stickRef.current = true;
+  }, [lastUserId]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  const jump = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = true;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollTo({ top: el.scrollHeight, behavior: reduce ? "auto" : "smooth" });
+  };
+
+  const lastIndex = messages.length - 1;
 
   return (
-    <div className="chat-scroll" ref={scrollRef}>
-      {messages.map((msg, i) => {
-        const isUser = msg.role === "user";
-        const time = formatTime(msg.ts);
-
-        return (
-          <div key={i} className={`msg ${isUser ? "user" : "ai"}`}>
-            <div className="avatar">{isUser ? "U" : "T"}</div>
-            <div style={{ minWidth: 0 }}>
-              <div
-                className="role"
-                style={isUser ? { justifyContent: "flex-end" } : undefined}
-              >
-                  {isUser ? "User" : "Tasky"}
-                {time && (
-                  <span className="when">· {time}</span>
-                )}
-              </div>
-              <div className="bubble">
-                {isUser ? (
-                  msg.content
-                ) : msg.error ? (
-                  <ErrorPill
-                    title={msg.error.title}
-                    hint={msg.error.hint}
-                    codes={msg.error.codes}
-                    retriable={msg.error.retriable}
-                    onRetry={() => onRetry?.(i)}
-                  />
-                ) : (
-                  <div className="content">
-                    <MarkdownRenderer content={msg.content} />
-
-                    {msg.file && (
-                      <div style={{ marginTop: 10 }}>
-                        <div className="file-pill">
-                          <div className="fp-icon">{FILE_DOC_SVG}</div>
-                          <div className="fp-text">
-                            <div className="fp-name">{msg.file.name}</div>
-                            <div className="fp-meta">{msg.file.meta}</div>
-                          </div>
-                          <button
-                            className="fp-dl"
-                            onClick={() => onDownload?.(msg.file)}
-                          >
-                            {DL_SVG}
-                            Descargar
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {msg.file && msg.meta?.complete && (
-                      <div style={{ marginTop: 10 }}>
-                        <div className="confirm">
-                          <span className="q">
-                            ¿Agregar este análisis al historial del área?
-                          </span>
-                          <button className="yes" onClick={() => onConfirm?.(i)}>
-                            Confirmar
-                          </button>
-                          <button className="no" onClick={() => onDeny?.(i)}>
-                            Denegar
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
+    <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+      <div className="chat-inner">
+        {loading ? (
+          <div className="chat-skeleton" aria-hidden="true">
+            <span />
+            <span />
+            <span />
           </div>
-        );
-      })}
-
-      {loading && (
-        <div className="msg ai">
-          <div className="avatar">T</div>
-          <div>
-            <div className="role">Tasky</div>
-            <div className="typing">
-              <span className="dot" />
-              <span className="dot" />
-              <span className="dot" />
-            </div>
-          </div>
-        </div>
+        ) : messages.length === 0 ? (
+          <EmptyState areaName={areaName} onPick={onPickSuggestion} />
+        ) : (
+          messages.map((m, i) => (
+            <MessageItem
+              key={m.id}
+              message={m}
+              isLast={i === lastIndex && m.role === "assistant"}
+              busy={sending}
+              onRegenerate={onRegenerate}
+              onPreview={onPreview}
+              onDownload={onDownload}
+              onSaveFile={onSaveFile}
+            />
+          ))
+        )}
+      </div>
+      {showJump && messages.length > 0 && (
+        <button type="button" className="jump-bottom" onClick={jump} aria-label="Ir al final">
+          <ArrowDownIcon />
+        </button>
       )}
     </div>
   );

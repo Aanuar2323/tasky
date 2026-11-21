@@ -1,44 +1,40 @@
-"""PPTX editor — text replacement in placeholders across all slides."""
+"""PPTX editor — plantillas `{{clave}}` y reemplazos en cuadros de texto, tablas,
+grupos y notas. Devuelve (bytes, stats)."""
 
 from __future__ import annotations
 
 import base64
 import io
+from typing import Any, Iterator
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+from utils.replace import apply_changes
 
 
-def edit_pptx(file_base64: str, changes: dict) -> bytes:
-    raw = base64.b64decode(file_base64)
-    prs = Presentation(io.BytesIO(raw))
+def _shape_paragraphs(shape) -> Iterator[Any]:
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for inner in shape.shapes:
+            yield from _shape_paragraphs(inner)
+        return
+    if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+        yield from shape.text_frame.paragraphs
+    if getattr(shape, "has_table", False) and shape.has_table:
+        for row in shape.table.rows:
+            for cell in row.cells:
+                yield from cell.text_frame.paragraphs
 
-    template = changes.get("template") or {}
-    global_replaces = changes.get("replace") or []
 
-    if not isinstance(global_replaces, list):
-        global_replaces = []
-
+def edit_pptx(file_base64: str, changes: dict) -> tuple[bytes, dict]:
+    prs = Presentation(io.BytesIO(base64.b64decode(file_base64)))
+    paragraphs = []
     for slide in prs.slides:
         for shape in slide.shapes:
-            if not shape.has_text_frame:
-                continue
-            for paragraph in shape.text_frame.paragraphs:
-                for run in paragraph.runs:
-                    # placeholder tokens {{key}}
-                    if template and ("{" in run.text or "}" in run.text):
-                        for key, value in template.items():
-                            placeholder = "{{" + key + "}}"
-                            if placeholder in run.text:
-                                v = "" if value is None else str(value)
-                                run.text = run.text.replace(placeholder, v)
-                    # global find/replace
-                    for r in global_replaces:
-                        find = r.get("find")
-                        rep = r.get("replace", "")
-                        if find and find in run.text:
-                            run.text = run.text.replace(find, rep)
-
+            paragraphs.extend(_shape_paragraphs(shape))
+        if slide.has_notes_slide:
+            paragraphs.extend(slide.notes_slide.notes_text_frame.paragraphs)
+    stats = {"replacements": apply_changes((list(p.runs) for p in paragraphs), changes)}
     buf = io.BytesIO()
     prs.save(buf)
-    buf.seek(0)
-    return buf.getvalue()
+    return buf.getvalue(), stats

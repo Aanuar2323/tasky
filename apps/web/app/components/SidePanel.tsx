@@ -1,569 +1,443 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import type { Area, TreeEntry } from "@/app/lib/api";
-import { downloadFile } from "@/app/lib/api";
-import { parseRulesMarkdown, rulesToMarkdown } from "@/app/lib/rules-parser";
+import { useEffect, useRef, useState } from "react";
+import {
+  deleteFile,
+  getGenerated,
+  getGeneratedHistory,
+  getRules,
+  getTree,
+  updateRules,
+  uploadFile,
+  type Area,
+  type GeneratedFile,
+  type HistoryGroup,
+  type TreeEntry,
+} from "../lib/api";
+import { parseRulesMarkdown, rulesToMarkdown, type RuleItem } from "../lib/rules-parser";
+import type { ChatFile } from "../types/chat";
+import { FileTile } from "./FileCard";
+import { KebabMenu } from "./Menu";
+import { DownloadIcon, PencilIcon, PlusIcon, TrashIcon, XIcon } from "./icons";
+
+export type PanelTab = "info" | "historial" | "reglas";
+
+const HIDDEN_FILES = new Set(["rules(ajkwygebfickuvaulwakfjbscfa).md", "summary(ajkwygebfickuvaulwakfjbscfa).md"]);
+const EMPTY_DESC = "Sin descripcion";
+
+type HistoryFilter = "all" | "week" | "month";
 
 interface SidePanelProps {
   open: boolean;
-  tab: "info" | "historial" | "reglas";
+  tab: PanelTab;
   area: Area | null;
   projectId: string;
-  treeEntries: TreeEntry[];
-  generatedHistory: unknown;
-  rulesContent: string;
-  onChangeTab: (tab: "info" | "historial" | "reglas") => void;
+  refreshKey: string;
+  onChangeTab: (tab: PanelTab) => void;
   onClose: () => void;
-  onUpdateRules: (markdown: string) => Promise<void>;
-  onRefreshInfo: () => Promise<void>;
-  onUploadContextFile: () => Promise<void>;
-  onDeleteContextFile: (path: string) => Promise<void>;
+  onPreview: (file: ChatFile) => void;
+  onDownload: (file: ChatFile) => void;
 }
 
-interface FileEntry {
-  name: string;
-  meta: string;
-  type: string;
-  path?: string;
+interface AreaData {
+  areaId: string;
+  tree: TreeEntry[];
+  generated: GeneratedFile[];
+  history: HistoryGroup[];
+  rules: RuleItem[];
 }
 
-interface HistoryGroup {
-  date: string;
-  days: number;
-  items: { title: string; time: string; meta: string }[];
+async function fetchAreaData(projectId: string, areaId: string): Promise<AreaData> {
+  const [tree, generated, history, rules] = await Promise.all([
+    getTree(projectId, undefined, areaId).catch(() => ({ entries: [] as TreeEntry[] })),
+    getGenerated(projectId, areaId).catch(() => ({ files: [] as GeneratedFile[] })),
+    getGeneratedHistory(projectId, areaId).catch(() => [] as HistoryGroup[]),
+    getRules(projectId, areaId).catch(() => ({ content: "" })),
+  ]);
+  return {
+    areaId,
+    tree: tree.entries,
+    generated: generated.files,
+    history,
+    rules: parseRulesMarkdown(rules.content),
+  };
 }
 
-interface Rule {
-  name: string;
-  desc: string;
-  tags: string[];
-  enabled: boolean;
+function toFile(path: string, name: string, summary?: string | null): ChatFile {
+  return { name, url: path, type: name.split(".").pop()?.toLowerCase() ?? "", summary: summary ?? null };
 }
 
-const HIDDEN_FILES = new Set([
-  "rules(ajkwygebfickuvaulwakfjbscfa).md",
-  "summary(ajkwygebfickuvaulwakfjbscfa).md",
-]);
+function RuleForm({ initial, onSave, onCancel }: { initial?: RuleItem; onSave: (name: string, desc: string) => void; onCancel: () => void }) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [desc, setDesc] = useState(initial?.desc && initial.desc !== EMPTY_DESC ? initial.desc : "");
+  const nameRef = useRef<HTMLInputElement>(null);
 
-const FILE_ICON_DOC = (
-  <svg viewBox="0 0 13 13" fill="none" stroke="currentColor">
-    <path d="M3 1.5h4l2 2v7.5H3V1.5z" strokeLinejoin="round" />
-    <path d="M5 6.5h3M5 8h2" strokeLinecap="round" />
-  </svg>
-);
+  useEffect(() => nameRef.current?.focus(), []);
 
-const FILE_ICON_PDF = (
-  <svg viewBox="0 0 13 13" fill="none" stroke="currentColor">
-    <path d="M3 1.5h4l2 2v7.5H3V1.5z" strokeLinejoin="round" />
-    <path d="M7 3.5v-2l2 2h-2z" strokeLinejoin="round" />
-  </svg>
-);
-
-const FILE_ICON_TABLE = (
-  <svg viewBox="0 0 13 13" fill="none" stroke="currentColor">
-    <rect x="2.5" y="2.5" width="8" height="8" rx="1" />
-    <path d="M2.5 5.5h8M2.5 8.5h8M5.5 2.5v8M8.5 2.5v8" strokeLinecap="round" />
-  </svg>
-);
-
-const FILE_ICON_MD = (
-  <svg viewBox="0 0 13 13" fill="none" stroke="currentColor">
-    <path d="M3 2.5h7v8H3v-8z" strokeLinejoin="round" />
-    <path d="M5 5v3M5 5l1.5 1.5M6.5 6.5L8 5M8 5v3" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const ICON_CHAT = (
-  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor">
-    <path d="M2 3.5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H5l-2 2v-2H3a1 1 0 0 1-1-1V3.5z" strokeLinejoin="round" />
-  </svg>
-);
-
-const ICON_EMPTY = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-    <path d="M5 4h11l3 3v13H5V4z" strokeLinejoin="round" />
-    <path d="M9 11h6M9 14h4" strokeLinecap="round" />
-  </svg>
-);
-
-const ADD_SVG = (
-  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor">
-    <path d="M6 2v8M2 6h8" strokeLinecap="round" />
-  </svg>
-);
-
-const DOWNLOAD_SVG = (
-  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor">
-    <path d="M6 1.5v6M3.5 5L6 7.5 8.5 5M2 10h8" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const DELETE_SVG = (
-  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor">
-    <path d="M3 3h6M4.5 3V2a.5.5 0 0 1 .5-.5h2A.5.5 0 0 1 7.5 2v1M5 5.5v3M7 5.5v3M3.5 3l.5 6.5h4l.5-6.5" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-function fileIcon(type: string) {
-  if (type === "pdf") return FILE_ICON_PDF;
-  if (type === "csv") return FILE_ICON_TABLE;
-  if (type === "md") return FILE_ICON_MD;
-  return FILE_ICON_DOC;
+  return (
+    <form
+      className="rule-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        // El formato de reglas guarda nombre y descripción en una sola línea.
+        if (name.trim()) onSave(name.trim().replace(/\s+/g, " "), desc.trim().replace(/\s*\n\s*/g, " "));
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onCancel();
+        }
+      }}
+    >
+      <label className="field">
+        <span>Nombre</span>
+        <input ref={nameRef} value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+      </label>
+      <label className="field">
+        <span>Qué debe hacer la IA</span>
+        <textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={3} maxLength={600} />
+      </label>
+      <div className="rule-form-actions">
+        <button type="button" className="btn" onClick={onCancel}>
+          Cancelar
+        </button>
+        <button type="submit" className="btn" data-tone="primary" disabled={!name.trim()}>
+          Guardar
+        </button>
+      </div>
+    </form>
+  );
 }
 
-function fileTypeFromName(name: string): string {
-  const ext = name.split(".").pop()?.toLowerCase() || "";
-  if (ext === "pdf") return "pdf";
-  if (ext === "csv" || ext === "tsv" || ext === "xlsx") return "csv";
-  if (ext === "md" || ext === "markdown") return "md";
-  return "docx";
+function FileActions({ onDownload, onDelete }: { onDownload: () => void; onDelete: () => void }) {
+  const [armed, setArmed] = useState(false);
+  return (
+    <>
+      <button type="button" role="menuitem" className="menu-item" onClick={onDownload}>
+        <DownloadIcon /> Descargar
+      </button>
+      <button type="button" role="menuitem" className="menu-item" data-tone="danger" onClick={() => (armed ? onDelete() : setArmed(true))}>
+        <TrashIcon /> {armed ? "Confirmar eliminación" : "Eliminar"}
+      </button>
+    </>
+  );
 }
 
-function fileTypeFromTreeEntry(type: string): string {
-  if (type === "pdf") return "pdf";
-  if (type === "csv" || type === "tsv" || type === "xlsx") return "csv";
-  if (type === "md" || type === "markdown") return "md";
-  return "docx";
-}
-
-type FilterKey = "recent" | "week" | "month" | "all";
-
-export default function SidePanel({
-  open,
-  tab,
-  area,
-  projectId,
-  treeEntries,
-  generatedHistory,
-  rulesContent,
-  onChangeTab,
-  onClose,
-  onUpdateRules,
-  onRefreshInfo,
-  onUploadContextFile,
-  onDeleteContextFile,
-}: SidePanelProps) {
-  const [filter, setFilter] = useState<FilterKey>("recent");
-  const [rules, setRules] = useState<Rule[]>([]);
-  const [menuOpenIdx, setMenuOpenIdx] = useState<number | null>(null);
-  const [fileMenuIdx, setFileMenuIdx] = useState<number | null>(null);
-
-  const files: FileEntry[] = treeEntries
-    .filter((e) => e.type === "file" && !HIDDEN_FILES.has(e.name))
-    .map((e) => ({
-      name: e.name,
-      meta: fileTypeFromTreeEntry(e.type).toUpperCase(),
-      type: fileTypeFromName(e.name),
-      path: e.path,
-    }));
+export default function SidePanel({ open, tab, area, projectId, refreshKey, onChangeTab, onClose, onPreview, onDownload }: SidePanelProps) {
+  const [data, setData] = useState<AreaData | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [filter, setFilter] = useState<HistoryFilter>("all");
+  const [editing, setEditing] = useState<number | "new" | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [notice, setNotice] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const areaId = area?.id ?? "";
 
   useEffect(() => {
-    setRules(parseRulesMarkdown(rulesContent));
-  }, [rulesContent]);
+    if (!open || !projectId || !areaId) return;
+    let cancelled = false;
+    fetchAreaData(projectId, areaId).then((d) => {
+      if (!cancelled) setData(d);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectId, areaId, refreshKey, reloadKey]);
 
   useEffect(() => {
     if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
     };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const toggleRule = async (idx: number) => {
-    const nextRules = rules.map((r, i) => (i === idx ? { ...r, enabled: !r.enabled } : r));
-    setRules(nextRules);
-    await onUpdateRules(rulesToMarkdown(nextRules));
-  };
+  // Los datos de otra área no se muestran mientras llegan los nuevos.
+  const current = data?.areaId === areaId ? data : null;
+  const rules = current?.rules ?? [];
+  const files = (current?.tree ?? []).filter((e) => e.type === "file" && !HIDDEN_FILES.has(e.name));
+  const generated = current?.generated ?? [];
+  const history = current?.history ?? [];
+  const historyCount = history.reduce((n, g) => n + g.items.length, 0);
+  const activeRules = rules.filter((r) => r.enabled).length;
+  const visibleHistory = history.filter((g) => (filter === "week" ? g.days <= 7 : filter === "month" ? g.days <= 30 : true));
 
-  const handleAddRule = async () => {
-    const name = window.prompt("Nombre de la regla");
-    if (!name?.trim()) return;
-    const desc = window.prompt("Descripcion corta", "") ?? "";
-    const nextRules = [
-      ...rules,
-      { name: name.trim(), desc: desc.trim(), tags: ["manual"], enabled: true },
-    ];
-    setRules(nextRules);
-    await onUpdateRules(rulesToMarkdown(nextRules));
-  };
-
-  const handleEditRule = async (idx: number) => {
-    const rule = rules[idx];
-    const name = window.prompt("Nombre de la regla", rule.name);
-    if (!name?.trim()) return;
-    const desc = window.prompt("Descripcion corta", rule.desc) ?? "";
-    const nextRules = rules.map((r, i) =>
-      i === idx ? { ...r, name: name.trim(), desc: desc.trim() } : r
-    );
-    setRules(nextRules);
-    await onUpdateRules(rulesToMarkdown(nextRules));
-  };
-
-  const handleDeleteRule = async (idx: number) => {
-    const nextRules = rules.filter((_, i) => i !== idx);
-    setRules(nextRules);
-    await onUpdateRules(rulesToMarkdown(nextRules));
-  };
-
-  const downloadFileEntry = useCallback(async (entry: FileEntry) => {
-    if (!projectId || !entry.path) return;
+  const saveRules = async (next: RuleItem[]) => {
+    setData((d) => (d && d.areaId === areaId ? { ...d, rules: next } : d));
     try {
-      const blob = await downloadFile(projectId, entry.path);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = entry.name;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error("File download failed:", err);
+      await updateRules(projectId, rulesToMarkdown(next), areaId);
+    } catch {
+      setNotice("No se pudieron guardar las reglas");
+      setReloadKey((k) => k + 1);
     }
-  }, [projectId]);
+  };
 
-  const handleDownloadContext = useCallback(async () => {
-    if (!projectId || files.length === 0) return;
-    await downloadFileEntry(files[0]);
-  }, [projectId, files, downloadFileEntry]);
+  const upload = async (list: FileList | null) => {
+    if (!list?.length || !areaId) return;
+    setUploading(true);
+    setNotice("");
+    try {
+      for (const file of Array.from(list)) await uploadFile(projectId, file, `ai/layer2/areas/${areaId}`);
+    } catch {
+      setNotice("No se pudo subir el archivo");
+    } finally {
+      setUploading(false);
+      setReloadKey((k) => k + 1);
+    }
+  };
 
-  const deleteFileEntry = useCallback(async (entry: FileEntry) => {
-    if (!entry.path) return;
-    await onDeleteContextFile(entry.path);
-    await onRefreshInfo();
-  }, [onDeleteContextFile, onRefreshInfo]);
-
-  const historyGroups: HistoryGroup[] = Array.isArray(generatedHistory)
-    ? (generatedHistory as HistoryGroup[])
-    : [];
-
-  const totalHistory = historyGroups.reduce(
-    (n, g) => n + g.items.length,
-    0
-  );
-
-  const filteredHistory = historyGroups.filter((g) => {
-    if (filter === "week") return g.days <= 7;
-    if (filter === "month") return g.days <= 30;
-    return true;
-  });
-
-  const areaName = area?.name || "";
-
-  const tabLabel =
-    tab === "info"
-      ? "Info"
-      : tab === "historial"
-        ? "Historial"
-        : "Reglas";
+  const removeFile = async (path: string) => {
+    try {
+      await deleteFile(projectId, path);
+    } catch {
+      setNotice("No se pudo eliminar el archivo");
+    } finally {
+      setReloadKey((k) => k + 1);
+    }
+  };
 
   return (
     <>
-      <div
-        className="sp-backdrop"
-        style={open ? { opacity: 1, pointerEvents: "auto" } : undefined}
-        onClick={onClose}
-      />
-      <aside
-        className="side-panel"
-        aria-hidden={!open}
-        aria-label="Panel de área"
-        style={open ? { transform: "translateX(0)" } : undefined}
-      >
-        <div className="sp-head">
-          <div className="sp-title">
-            <span className="sp-eyebrow">Panel · {tabLabel}</span>
-            <span className="sp-name">{areaName}</span>
-          </div>
-          <button
-            className="icon-btn"
-            data-tip="Cerrar"
-            aria-label="Cerrar panel"
-            onClick={onClose}
-          >
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
-              <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
-            </svg>
+      <div className="sp-backdrop" data-open={open ? "true" : "false"} onClick={onClose} />
+      <aside className="side-panel" data-open={open ? "true" : "false"} aria-label={`Panel de ${area?.name ?? "área"}`} inert={!open}>
+        <header className="sp-head">
+          <h2 className="sp-name">{area?.name ?? ""}</h2>
+          <button type="button" className="icon-btn" aria-label="Cerrar panel" onClick={onClose}>
+            <XIcon />
+          </button>
+        </header>
+
+        <div className="sp-tabs" role="tablist" aria-label="Secciones del área">
+          <button type="button" role="tab" className="sp-tab" aria-selected={tab === "info"} onClick={() => onChangeTab("info")}>
+            Archivos
+          </button>
+          <button type="button" role="tab" className="sp-tab" aria-selected={tab === "historial"} onClick={() => onChangeTab("historial")}>
+            Historial {historyCount > 0 && <span className="sp-count">{historyCount}</span>}
+          </button>
+          <button type="button" role="tab" className="sp-tab" aria-selected={tab === "reglas"} onClick={() => onChangeTab("reglas")}>
+            Reglas {activeRules > 0 && <span className="sp-count">{activeRules}</span>}
           </button>
         </div>
 
-        <div className="sp-tabs" role="tablist">
-          <button
-            className="sp-tab"
-            role="tab"
-            aria-selected={tab === "info" ? "true" : "false"}
-            onClick={() => onChangeTab("info")}
-          >
-            Info
-          </button>
-          <button
-            className="sp-tab"
-            role="tab"
-            aria-selected={tab === "historial" ? "true" : "false"}
-            onClick={() => onChangeTab("historial")}
-          >
-            Historial{" "}
-            <span className="sp-tab-count">{totalHistory}</span>
-          </button>
-          <button
-            className="sp-tab"
-            role="tab"
-            aria-selected={tab === "reglas" ? "true" : "false"}
-            onClick={() => onChangeTab("reglas")}
-          >
-            Reglas{" "}
-            <span className="sp-tab-count">{rules.length}</span>
-          </button>
-        </div>
-
-        <div className="sp-body">
-          {/* INFO TAB */}
-          <div
-            className="sp-pane"
-            aria-current={tab === "info" ? "true" : "false"}
-          >
-           
-            <div className="sp-card">
-              <div className="sp-card-eyebrow">Contexto del área</div>
-              <p
-                style={{
-                  font: "400 12px/1.5 var(--font)",
-                  color: "var(--muted)",
-                  marginBottom: 6,
-                }}
-              >
-                Agregar, descargar o eliminar archivos de contexto del área
-                activa.
-              </p>
-              <div className="sp-card-actions">
-                <button className="sp-act" data-tone="primary" onClick={() => void onUploadContextFile()}>
-                  {ADD_SVG} Agregar
-                </button>
-              </div>
-
-              {files.length === 0 ? (
-                <div className="sp-empty">
-                  {ICON_EMPTY}
-                  Esta área no tiene archivos de contexto todavía.
-                </div>
-              ) : (
-                files.map((f, i) => (
-                  <div key={i} className="file-row" data-type={f.type}>
-                    <div className="fr-icon">{fileIcon(f.type)}</div>
-                    <div className="fr-body">
-                      <div className="fr-name">{f.name}</div>
-                      <div className="fr-meta">{f.meta}</div>
-                    </div>
-                    <div className="fr-kebab-wrap">
-                      <button
-                        className="fr-kebab"
-                        aria-label="Más opciones"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setFileMenuIdx(fileMenuIdx === i ? null : i);
-                        }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                          <circle cx="7" cy="2.5" r="1.3" fill="currentColor" />
-                          <circle cx="7" cy="7" r="1.3" fill="currentColor" />
-                          <circle cx="7" cy="11.5" r="1.3" fill="currentColor" />
-                        </svg>
-                      </button>
-                      {fileMenuIdx === i && (
-                        <>
-                          <div
-                            className="fr-menu-backdrop"
-                            onClick={() => setFileMenuIdx(null)}
-                          />
-                          <div className="fr-menu" role="menu">
-                            <button
-                              className="fr-menu-item"
-                              role="menuitem"
-                              onClick={() => {
-                                setFileMenuIdx(null);
-                                void downloadFileEntry(f);
-                              }}
-                            >
-                              <span className="fr-menu-icon">{DOWNLOAD_SVG}</span>
-                              Descargar
-                            </button>
-                            <button
-                              className="fr-menu-item fr-menu-item-danger"
-                              role="menuitem"
-                              onClick={() => {
-                                setFileMenuIdx(null);
-                                void deleteFileEntry(f);
-                              }}
-                            >
-                              <span className="fr-menu-icon">{DELETE_SVG}</span>
-                              Eliminar
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* HISTORIAL TAB */}
-          <div
-            className="sp-pane"
-            aria-current={tab === "historial" ? "true" : "false"}
-          >
-            <div className="hist-filter" role="tablist">
-              {(
-                [
-                  ["recent", "Recientes"],
-                  ["week", "Esta semana"],
-                  ["month", "Este mes"],
-                  ["all", "Todo"],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  className="hf-chip"
-                  aria-selected={filter === key ? "true" : "false"}
-                  onClick={() => setFilter(key)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {filteredHistory.length === 0 ? (
-              <div className="sp-empty">
-                {ICON_EMPTY}
-                Sin sesiones en este rango.
-              </div>
-            ) : (
-              filteredHistory.map((g, gi) => (
-                <div key={gi} className="hist-group">
-                  <div className="hist-date">{g.date}</div>
-                  {g.items.map((it, ii) => (
-                    <div key={ii} className="hist-item">
-                      <div className="hi-mark">{ICON_CHAT}</div>
-                      <div className="hi-body">
-                        <div className="hi-title">{it.title}</div>
-                        <div className="hi-meta">{it.meta}</div>
-                      </div>
-                      <div className="hi-time">{it.time}</div>
-                    </div>
-                  ))}
-                </div>
-              ))
-            )}
-          </div>
-
-          {/* REGLAS TAB */}
-          <div
-            className="sp-pane"
-            aria-current={tab === "reglas" ? "true" : "false"}
-          >
-            <div className="sp-card">
-              <div className="sp-card-eyebrow">Reglas del área</div>
-              <p
-                style={{
-                  font: "400 12px/1.5 var(--font)",
-                  color: "var(--muted)",
-                  marginBottom: 10,
-                }}
-              >
-                Configura cómo responde la IA cuando trabaja dentro de esta
-                área. Las reglas se aplican solo a esta sección.
-              </p>
-
-              {rules.length === 0 ? (
-                <div className="sp-empty">
-                  {ICON_EMPTY}
-                  No hay reglas configuradas. Agrega una para guiar las
-                  respuestas de la IA en esta área.
-                </div>
-              ) : (
-                rules.map((r, i) => (
-                  <div
-                    key={i}
-                    className="rule-row"
-                    data-enabled={r.enabled ? "true" : "false"}
-                  >
-                    <div className="rr-body">
-                      <div className="rr-name">{r.name}</div>
-                      <div className="rr-desc">{r.desc}</div>
-                      {r.tags.length > 0 && (
-                        <div className="rr-tags">
-                          {r.tags.map((t) => (
-                            <span key={t} className="rr-tag">
-                              {t}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      className="rr-toggle"
-                      aria-label="Activar regla"
-                      onClick={() => {
-                        void toggleRule(i);
-                      }}
-                    />
-                    <div className="rr-kebab-wrap">
-                      <button
-                        className="rr-kebab"
-                        aria-label="Más opciones"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setMenuOpenIdx(menuOpenIdx === i ? null : i);
-                        }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                          <circle cx="7" cy="2.5" r="1.3" fill="currentColor" />
-                          <circle cx="7" cy="7" r="1.3" fill="currentColor" />
-                          <circle cx="7" cy="11.5" r="1.3" fill="currentColor" />
-                        </svg>
-                      </button>
-                      {menuOpenIdx === i && (
-                        <>
-                          <div
-                            className="rr-menu-backdrop"
-                            onClick={() => setMenuOpenIdx(null)}
-                          />
-                          <div className="rr-menu">
-                            <button
-                              className="rr-menu-item"
-                              onClick={() => {
-                                setMenuOpenIdx(null);
-                                void handleEditRule(i);
-                              }}
-                            >
-                              Editar regla
-                            </button>
-                            <button
-                              className="rr-menu-item rr-menu-item-danger"
-                              onClick={() => {
-                                setMenuOpenIdx(null);
-                                void handleDeleteRule(i);
-                              }}
-                            >
-                              Eliminar regla
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-
-              <button className="rule-add" onClick={() => void handleAddRule()}>
-                {ADD_SVG} Agregar regla
+        <div className="sp-body" role="tabpanel">
+          {notice && (
+            <p className="sp-notice" role="alert">
+              {notice}
+              <button type="button" className="icon-btn" aria-label="Descartar aviso" onClick={() => setNotice("")}>
+                <XIcon />
               </button>
-            </div>
-          </div>
+            </p>
+          )}
+
+          {tab === "info" && (
+            <>
+              <section className="sp-section">
+                <div className="sp-section-head">
+                  <h3>Contexto</h3>
+                  <button type="button" className="btn" data-size="sm" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                    <PlusIcon /> {uploading ? "Subiendo…" : "Agregar"}
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      void upload(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                </div>
+                {current && files.length === 0 ? (
+                  <p className="sp-empty">Documentos que la IA consulta al responder en esta área.</p>
+                ) : (
+                  <ul className="file-list">
+                    {files.map((f) => (
+                      <li key={f.path} className="file-row">
+                        <button type="button" className="fr-main" onClick={() => onPreview(toFile(f.path, f.name))}>
+                          <FileTile name={f.name} size="sm" />
+                          <span className="fr-name">{f.name}</span>
+                        </button>
+                        <KebabMenu label={f.name}>
+                          {(close) => (
+                            <FileActions
+                              onDownload={() => {
+                                close();
+                                onDownload(toFile(f.path, f.name));
+                              }}
+                              onDelete={() => {
+                                close();
+                                void removeFile(f.path);
+                              }}
+                            />
+                          )}
+                        </KebabMenu>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="sp-section">
+                <div className="sp-section-head">
+                  <h3>Generados</h3>
+                </div>
+                {current && generated.length === 0 ? (
+                  <p className="sp-empty">Todavía no hay archivos creados en esta área.</p>
+                ) : (
+                  <ul className="file-list">
+                    {generated.map((g) => (
+                      <li key={g.path} className="file-row">
+                        <button type="button" className="fr-main" onClick={() => onPreview(toFile(g.path, g.filename, g.summary))}>
+                          <FileTile name={g.filename} size="sm" />
+                          <span className="fr-text">
+                            <span className="fr-name">{g.filename}</span>
+                            {g.summary && <span className="fr-meta">{g.summary}</span>}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn row-kebab"
+                          aria-label={`Descargar ${g.filename}`}
+                          onClick={() => onDownload(toFile(g.path, g.filename))}
+                        >
+                          <DownloadIcon />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </>
+          )}
+
+          {tab === "historial" && (
+            <>
+              <div className="segmented" role="group" aria-label="Período">
+                {(
+                  [
+                    ["all", "Todo"],
+                    ["week", "7 días"],
+                    ["month", "30 días"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {current && visibleHistory.length === 0 ? (
+                <p className="sp-empty">Los archivos que guardes desde el chat quedan acá.</p>
+              ) : (
+                visibleHistory.map((g) => (
+                  <section key={g.date} className="hist-group">
+                    <h3 className="hist-date">{g.date}</h3>
+                    <ul className="file-list">
+                      {g.items.map((it) => (
+                        <li key={`${g.date}-${it.title}`} className="file-row">
+                          <button
+                            type="button"
+                            className="fr-main"
+                            disabled={!it.path}
+                            onClick={() => it.path && onPreview(toFile(it.path, it.title, it.summary))}
+                          >
+                            <FileTile name={it.title} size="sm" />
+                            <span className="fr-text">
+                              <span className="fr-name">{it.title}</span>
+                              {it.summary && <span className="fr-meta">{it.summary}</span>}
+                            </span>
+                          </button>
+                          <span className="fr-time">{it.time}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))
+              )}
+            </>
+          )}
+
+          {tab === "reglas" && (
+            <section className="sp-section">
+              {current && rules.length === 0 && editing !== "new" && (
+                <p className="sp-empty">Indicaciones que la IA sigue en cada respuesta de esta área.</p>
+              )}
+              <ul className="rule-list">
+                {rules.map((r, i) =>
+                  editing === i ? (
+                    <li key={`edit-${i}`}>
+                      <RuleForm
+                        initial={r}
+                        onCancel={() => setEditing(null)}
+                        onSave={(name, desc) => {
+                          setEditing(null);
+                          void saveRules(rules.map((x, j) => (j === i ? { ...x, name, desc } : x)));
+                        }}
+                      />
+                    </li>
+                  ) : (
+                    <li key={`${r.name}-${i}`} className="rule-row" data-enabled={r.enabled ? "true" : "false"}>
+                      <div className="rr-body">
+                        <div className="rr-name">{r.name}</div>
+                        {r.desc && r.desc !== EMPTY_DESC && <div className="rr-desc">{r.desc}</div>}
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={r.enabled}
+                        aria-label={r.name}
+                        className="switch"
+                        onClick={() => void saveRules(rules.map((x, j) => (j === i ? { ...x, enabled: !x.enabled } : x)))}
+                      />
+                      <KebabMenu label={r.name}>
+                        {(close) => (
+                          <>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="menu-item"
+                              onClick={() => {
+                                close();
+                                setEditing(i);
+                              }}
+                            >
+                              <PencilIcon /> Editar
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="menu-item"
+                              data-tone="danger"
+                              onClick={() => {
+                                close();
+                                void saveRules(rules.filter((_, j) => j !== i));
+                              }}
+                            >
+                              <TrashIcon /> Eliminar
+                            </button>
+                          </>
+                        )}
+                      </KebabMenu>
+                    </li>
+                  )
+                )}
+              </ul>
+              {editing === "new" ? (
+                <RuleForm
+                  onCancel={() => setEditing(null)}
+                  onSave={(name, desc) => {
+                    setEditing(null);
+                    void saveRules([...rules, { name, desc, tags: [], enabled: true }]);
+                  }}
+                />
+              ) : (
+                <button type="button" className="rule-add" onClick={() => setEditing("new")}>
+                  <PlusIcon /> Agregar regla
+                </button>
+              )}
+            </section>
+          )}
         </div>
       </aside>
     </>

@@ -1,56 +1,62 @@
-"""DOCX editor — paragraph/replacement of `{{placeholder}}` style or text tokens."""
+"""DOCX editor — plantillas `{{clave}}`, reemplazos y anexado de contenido markdown.
+
+Recorre cuerpo, tablas anidadas, encabezados y pies. Devuelve (bytes, stats)."""
 
 from __future__ import annotations
 
 import base64
 import io
+from typing import Any, Iterator
 
 from docx import Document
 
+from utils.replace import apply_changes
 
-def edit_docx(file_base64: str, changes: dict) -> bytes:
-    raw = base64.b64decode(file_base64)
-    doc = Document(io.BytesIO(raw))
 
-    template = changes.get("template")
-    if template:
-        for paragraph in doc.paragraphs:
-            for key, value in template.items():
-                if isinstance(value, (list, dict)):
-                    value_text = str(value)
-                else:
-                    value_text = str(value) if value is not None else ""
-                if "{" in paragraph.text and "}" in paragraph.text and key in paragraph.text:
-                    for run in paragraph.runs:
-                        if key in run.text:
-                            run.text = run.text.replace(key, value_text)
-        # tables
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for paragraph in cell.paragraphs:
-                        for key, value in template.items():
-                            if key in paragraph.text:
-                                v = "" if value is None else str(value)
-                                for run in paragraph.runs:
-                                    if key in run.text:
-                                        run.text = run.text.replace(key, v)
+def _table_paragraphs(table) -> Iterator[Any]:
+    for row in table.rows:
+        for cell in row.cells:
+            yield from cell.paragraphs
+            for inner in cell.tables:
+                yield from _table_paragraphs(inner)
 
-    # also support simple global find/replace
-    replaces = changes.get("replace", [])
-    if isinstance(replaces, list):
-        for item in replaces:
-            find = item.get("find")
-            rep = item.get("replace", "")
-            if not find:
+
+def _container_paragraphs(container) -> Iterator[Any]:
+    yield from container.paragraphs
+    for table in container.tables:
+        yield from _table_paragraphs(table)
+
+
+def _all_paragraphs(doc) -> Iterator[Any]:
+    yield from _container_paragraphs(doc)
+    for section in doc.sections:
+        for part in (section.header, section.footer, section.first_page_header, section.first_page_footer,
+                     section.even_page_header, section.even_page_footer):
+            # Un encabezado "vinculado al anterior" no tiene definición propia; acceder
+            # a su contenido la crearía vacía, así que se salta.
+            if part.is_linked_to_previous:
                 continue
-            for paragraph in doc.paragraphs:
-                if find in paragraph.text:
-                    for run in paragraph.runs:
-                        if find in run.text:
-                            run.text = run.text.replace(find, rep)
+            yield from _container_paragraphs(part)
+
+
+def edit_docx(file_base64: str, changes: dict) -> tuple[bytes, dict]:
+    doc = Document(io.BytesIO(base64.b64decode(file_base64)))
+    stats: dict[str, Any] = {"replacements": 0, "appended_blocks": 0}
+
+    # Los párrafos de celdas combinadas se repiten al recorrer: dedupe por elemento.
+    unique, seen = [], set()
+    for p in _all_paragraphs(doc):
+        if id(p._p) not in seen:
+            seen.add(id(p._p))
+            unique.append(p)
+    stats["replacements"] = apply_changes((p.runs for p in unique), changes)
+
+    md = changes.get("append_markdown") or changes.get("append")
+    if isinstance(md, str) and md.strip():
+        from builders.docx_builder import render_markdown_into
+
+        stats["appended_blocks"] = render_markdown_into(doc, md)
 
     buf = io.BytesIO()
     doc.save(buf)
-    buf.seek(0)
-    return buf.getvalue()
+    return buf.getvalue(), stats

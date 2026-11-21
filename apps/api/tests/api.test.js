@@ -15,6 +15,9 @@ describe('API Endpoints', async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tasky-api-test-'));
     process.env.STORAGE_ROOT = tmpDir;
     process.env.PORT = String(PORT);
+    // Sin red real: los proveedores apuntan a un puerto cerrado.
+    process.env.OPENROUTER_BASE_URL = 'http://127.0.0.1:9/api/v1';
+    process.env.NVIDIA_BASE_URL = 'http://127.0.0.1:9/v1';
 
     // Dynamic import so env vars are set before modules load
     const mod = await import('../src/index.js');
@@ -27,6 +30,8 @@ describe('API Endpoints', async () => {
     }
     delete process.env.STORAGE_ROOT;
     delete process.env.PORT;
+    delete process.env.OPENROUTER_BASE_URL;
+    delete process.env.NVIDIA_BASE_URL;
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   });
 
@@ -227,7 +232,7 @@ describe('API Endpoints', async () => {
       assert.equal(res.status, 200);
 
       const getRes = await fetch_(`/api/projects/${projectId}/file?path=test/myfile.txt`);
-      assert.equal(getRes.status, 500);
+      assert.equal(getRes.status, 404);
     });
   });
 

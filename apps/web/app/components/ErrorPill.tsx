@@ -1,47 +1,29 @@
 "use client";
 
 import { memo } from "react";
+import type { HumanError } from "../types/chat";
+import { AlertIcon, RefreshIcon } from "./icons";
 
-interface ErrorPillProps {
-  title: string;
-  hint: string;
-  codes: number[];
-  retriable?: boolean;
-  onRetry?: () => void;
-}
-
-const ALERT_SVG = (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" className="size-4 shrink-0">
-    <circle cx="8" cy="8" r="6.5" />
-    <path d="M8 5v3.5M8 10.5v.5" strokeLinecap="round" />
-  </svg>
-);
-
-function ErrorPill({ title, hint, codes, retriable, onRetry }: ErrorPillProps) {
+function ErrorPill({ error, onRetry }: { error: HumanError; onRetry?: () => void }) {
+  const codes = error.codes?.filter(Boolean) ?? [];
   return (
-    <div className="my-1 flex justify-start">
-      <div className="max-w-md rounded-xl border border-red-500/30 bg-red-500/10 backdrop-blur-sm shadow-sm px-4 py-3 text-sm">
-        <div className="flex items-center gap-2 font-medium text-red-100">
-          {ALERT_SVG}
-          {title}
-        </div>
-        <p className="mt-1 text-xs leading-snug text-red-200/70">{hint}</p>
-        <div className="mt-2 flex items-center justify-between gap-3">
-          {retriable !== false && onRetry ? (
-            <button
-              onClick={onRetry}
-              className="rounded-md bg-red-500/15 border border-red-500/30 px-2 py-0.5 text-xs text-red-100 hover:bg-red-500/25 transition"
-            >
-              ↻ Reintentar
-            </button>
-          ) : (
-            <span />
-          )}
-          <span className="font-mono text-[10px] text-red-300/50">
-            {codes.filter(Boolean).join(' · ')}
-          </span>
-        </div>
+    <div className="error-pill" role="alert" title={codes.length ? `Código ${codes.join(", ")}` : undefined}>
+      <AlertIcon className="ep-icon" />
+      <div className="ep-body">
+        <div className="ep-title">{error.title}</div>
+        {error.hint && <div className="ep-hint">{error.hint}</div>}
+        {error.action === "usage" && (
+          <a className="ep-hint" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">
+            Ver uso en ChatGPT
+          </a>
+        )}
       </div>
+      {onRetry && error.retriable !== false && (
+        <button type="button" className="ep-retry" onClick={onRetry}>
+          <RefreshIcon />
+          Reintentar
+        </button>
+      )}
     </div>
   );
 }

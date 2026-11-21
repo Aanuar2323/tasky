@@ -4,16 +4,24 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+const PORT = 9877;
+
 describe('context extraction', async () => {
   let tmpDir;
-  let api;
+  let server;
   let storage;
+  let api;
 
   before(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tasky-ctx-'));
     process.env.STORAGE_ROOT = tmpDir;
+    process.env.PORT = String(PORT);
+
+    // Dynamic import so env vars are set before modules load
+    const mod = await import('../src/index.js');
+    server = mod.server;
     storage = await import('../src/storage.js');
-    api = await import('../src/index.js');
+    api = mod;
 
     const projRoot = storage.projectRoot({ projectId: 'ctx-test' });
     await storage.ensureProjectScaffold(projRoot);
@@ -24,6 +32,10 @@ describe('context extraction', async () => {
 
   after(async () => {
     delete process.env.STORAGE_ROOT;
+    delete process.env.PORT;
+    if (server) {
+      await new Promise(resolve => server.close(resolve));
+    }
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -155,7 +167,22 @@ describe('context extraction', async () => {
   });
 });
 
-describe('docx extraction (mammoth)', () => {
+describe('docx extraction (mammoth)', async () => {
+  let server;
+
+  before(async () => {
+    process.env.PORT = '9878';
+    const mod = await import('../src/index.js');
+    server = mod.server;
+  });
+
+  after(async () => {
+    delete process.env.PORT;
+    if (server) {
+      await new Promise(resolve => server.close(resolve));
+    }
+  });
+
   it('extracts text from a real DOCX if available', async () => {
     const realPath = '/home/anuar/Documents/proyects/tasky/storage/users/default/projects/VHcZ5hrrwx/ai/layer2/areas/a1/Web Scraping with Playwright for Multi-Store Monitoring of the Smartphone Market: Price, Supply, and Demand Indicators.docx';
     let stat;
@@ -165,8 +192,8 @@ describe('docx extraction (mammoth)', () => {
       return;
     }
     assert.ok(stat.size > 1000);
-    const api = await import('../src/index.js');
-    const text = await api.readContextFile('/home/anuar/Documents/proyects/tasky/storage/users/default/projects/VHcZ5hrrwx', 'ai/layer2/areas/a1/Web Scraping with Playwright for Multi-Store Monitoring of the Smartphone Market: Price, Supply, and Demand Indicators.docx');
+    const mod = await import('../src/index.js');
+    const text = await mod.readContextFile('/home/anuar/Documents/proyects/tasky/storage/users/default/projects/VHcZ5hrrwx', 'ai/layer2/areas/a1/Web Scraping with Playwright for Multi-Store Monitoring of the Smartphone Market: Price, Supply, and Demand Indicators.docx');
     assert.ok(text.length > 100, `expected >100 chars, got ${text.length}`);
     assert.ok(/Playwright|smartphone|Scrapi/i.test(text));
   });

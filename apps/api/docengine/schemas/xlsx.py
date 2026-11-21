@@ -1,4 +1,4 @@
-"""XLSX schema — sheets with headers, rows, charts, merges, freeze, etc."""
+"""XLSX schema — hojas con encabezados, filas, gráficos, tablas de Excel, etc."""
 
 from __future__ import annotations
 
@@ -19,13 +19,19 @@ class XlsxTheme(BaseModel):
 
 class XlsxChart(BaseModel):
     model_config = ConfigDict(extra="allow")
-    type: Literal["bar", "line", "pie", "scatter"] = "bar"
+    type: Literal["bar", "line", "pie", "scatter", "doughnut", "area"] = "bar"
     title: str | None = None
     labels: list[str] | None = None
+    labels_column: str | None = None
     series: list[dict[str, Any]] | None = None
-    anchor_cell: str = "E2"
-    width: int = 15
-    height: int = 8
+    horizontal: bool = False
+    stacked: bool = False
+    data_labels: bool = False
+    x_title: str | None = None
+    y_title: str | None = None
+    anchor_cell: str | None = None
+    width: float = 16
+    height: float = 8.5
     show_legend: bool = True
 
 
@@ -43,6 +49,7 @@ class ConditionalFormatRule(BaseModel):
     formula: list[str] | None = None
     fill_color: str | None = None
     font_color: str | None = None
+    range: str | None = None
 
 
 class DataValidation(BaseModel):
@@ -73,12 +80,16 @@ class Sheet(BaseModel):
     merge_cells: list[str] | None = None
     freeze: FreezePane | None = None
     chart: XlsxChart | None = None
+    charts: list[XlsxChart] | None = None
     styling: XlsxTheme | None = None
     summary_row: SummaryRow | None = None
     conditional_formatting: list[ConditionalFormatRule] | None = None
     data_validations: list[DataValidation] | None = None
     tab_color: str | None = None
     auto_filter: bool = True
+    as_table: bool = True
+    table_style: str | None = None
+    wrap_text: bool = False
 
 
 class XlsxPayload(BaseModel):

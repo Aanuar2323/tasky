@@ -107,7 +107,7 @@ describe('docengine.js (CLI wrapper)', async () => {
       const result = await docengine.generateFile({
         type: 'docx',
         outputDir: tmpDir,
-        data: { filename: 'naked' },
+        data: { filename: 'naked', sections: [{ type: 'heading', text: 'N', level: 1 }] },
         filename: 'naked',
       });
       assert.match(result.filename, /\.docx$/);
@@ -127,7 +127,7 @@ describe('docengine.js (CLI wrapper)', async () => {
       const result = await docengine.generateFile({
         type: 'docx',
         outputDir: outDir,
-        data: { filename: 'nested.docx' },
+        data: { filename: 'nested.docx', sections: [{ type: 'heading', text: 'Nested', level: 1 }] },
         filename: 'nested.docx',
       });
       const stat = await fs.stat(result.filePath);
@@ -163,6 +163,81 @@ describe('docengine.js (CLI wrapper)', async () => {
           return true;
         }
       );
+    });
+
+    it('rejects with schema_error on docx with sections: [] (empty_payload)', async () => {
+      await assert.rejects(
+        docengine.generateFile({
+          type: 'docx',
+          outputDir: tmpDir,
+          data: { filename: 'empty.docx', sections: [] },
+          filename: 'empty.docx',
+        }),
+        (err) => {
+          assert.equal(err.kind, 'schema_error');
+          assert.equal(err.exitCode, 4);
+          return true;
+        }
+      );
+    });
+
+    it('rejects with schema_error on docx with only filename (no sections)', async () => {
+      await assert.rejects(
+        docengine.generateFile({
+          type: 'docx',
+          outputDir: tmpDir,
+          data: { filename: 'empty.docx' },
+          filename: 'empty.docx',
+        }),
+        (err) => {
+          assert.equal(err.kind, 'schema_error');
+          assert.equal(err.exitCode, 4);
+          return true;
+        }
+      );
+    });
+
+    it('rejects with schema_error on xlsx with sheets: []', async () => {
+      await assert.rejects(
+        docengine.generateFile({
+          type: 'xlsx',
+          outputDir: tmpDir,
+          data: { filename: 'empty.xlsx', sheets: [] },
+          filename: 'empty.xlsx',
+        }),
+        (err) => {
+          assert.equal(err.kind, 'schema_error');
+          assert.equal(err.exitCode, 4);
+          return true;
+        }
+      );
+    });
+
+    it('rejects with schema_error on pptx with slides: []', async () => {
+      await assert.rejects(
+        docengine.generateFile({
+          type: 'pptx',
+          outputDir: tmpDir,
+          data: { filename: 'empty.pptx', slides: [] },
+          filename: 'empty.pptx',
+        }),
+        (err) => {
+          assert.equal(err.kind, 'schema_error');
+          assert.equal(err.exitCode, 4);
+          return true;
+        }
+      );
+    });
+
+    it('accepts docx with divider section (no text, still visible content)', async () => {
+      const result = await docengine.generateFile({
+        type: 'docx',
+        outputDir: tmpDir,
+        data: { filename: 'divider.docx', sections: [{ type: 'divider' }] },
+        filename: 'divider.docx',
+      });
+      const stat = await fs.stat(result.filePath);
+      assert.ok(stat.size > 0);
     });
   });
 
@@ -221,6 +296,116 @@ describe('docengine.js (CLI wrapper)', async () => {
           changes: {},
           filename: 'nope_out.docx',
         })
+      );
+    });
+
+    it('never overwrites the source file when editing to the same name', async () => {
+      const dir = path.join(tmpDir, 'edit-same');
+      const gen = await docengine.generateFile({
+        type: 'docx',
+        outputDir: dir,
+        data: { sections: [{ type: 'paragraph', text: 'Hola cliente' }] },
+        filename: 'contrato.docx',
+      });
+      const result = await docengine.editFile({
+        type: 'docx',
+        inputPath: gen.filePath,
+        outputDir: dir,
+        changes: { replace: [{ find: 'cliente', replace: 'ACME' }] },
+        filename: 'contrato.docx',
+      });
+      assert.equal(result.filename, 'contrato-v2.docx');
+      assert.ok((await fs.stat(gen.filePath)).size > 0);
+    });
+  });
+
+  describe('sanitizeFilename', () => {
+    it('strips directory components (path traversal)', () => {
+      assert.equal(docengine.sanitizeFilename('../../x.docx', 'docx'), 'x.docx');
+      assert.equal(docengine.sanitizeFilename('..\\..\\evil.xlsx', 'xlsx'), 'evil.xlsx');
+      assert.equal(docengine.sanitizeFilename('/etc/passwd', 'docx'), 'passwd.docx');
+    });
+
+    it('replaces reserved characters and control chars', () => {
+      assert.equal(docengine.sanitizeFilename('a/b:c?.xlsx', 'xlsx'), 'b_c_.xlsx');
+      assert.equal(docengine.sanitizeFilename('in\u0000fo<>|"*.docx', 'docx'), 'in_fo_____.docx');
+    });
+
+    it('keeps accents and spaces readable, trims dots', () => {
+      assert.equal(docengine.sanitizeFilename('  Informe de Gestión 2026.docx ', 'docx'), 'Informe de Gestión 2026.docx');
+      assert.equal(docengine.sanitizeFilename('...oculto.pptx', 'pptx'), 'oculto.pptx');
+    });
+
+    it('fixes the extension to match the type', () => {
+      assert.equal(docengine.sanitizeFilename('reporte.pdf', 'docx'), 'reporte.pdf.docx');
+      assert.equal(docengine.sanitizeFilename('REPORTE.DOCX', 'docx'), 'REPORTE.DOCX');
+    });
+
+    it('generates a name when empty or only junk', () => {
+      assert.match(docengine.sanitizeFilename('', 'pptx'), /^pptx-.{8}\.pptx$/);
+      assert.match(docengine.sanitizeFilename('../..', 'docx'), /^docx-.{8}\.docx$/);
+    });
+
+    it('limits length to 120 chars keeping the extension', () => {
+      const name = docengine.sanitizeFilename('a'.repeat(300) + '.xlsx', 'xlsx');
+      assert.ok(name.length <= 120);
+      assert.ok(name.endsWith('.xlsx'));
+    });
+  });
+
+  describe('versioning, sidecar and fixes', () => {
+    const DOCX = { sections: [{ type: 'paragraph', text: 'x' }] };
+
+    it('versions the filename instead of overwriting', async () => {
+      const dir = path.join(tmpDir, 'versions');
+      const a = await docengine.generateFile({ type: 'docx', outputDir: dir, filename: 'inf.docx', data: DOCX });
+      const b = await docengine.generateFile({ type: 'docx', outputDir: dir, filename: 'inf.docx', data: DOCX });
+      const c = await docengine.generateFile({ type: 'docx', outputDir: dir, filename: 'inf.docx', data: DOCX });
+      assert.deepEqual([a.filename, b.filename, c.filename], ['inf.docx', 'inf-v2.docx', 'inf-v3.docx']);
+    });
+
+    it('overwrite: true replaces the existing file', async () => {
+      const dir = path.join(tmpDir, 'overwrite');
+      await docengine.generateFile({ type: 'docx', outputDir: dir, filename: 'o.docx', data: DOCX });
+      const b = await docengine.generateFile({ type: 'docx', outputDir: dir, filename: 'o.docx', data: DOCX, overwrite: true });
+      assert.equal(b.filename, 'o.docx');
+    });
+
+    it('writes a source sidecar that can be read back', async () => {
+      const dir = path.join(tmpDir, 'sidecar');
+      const res = await docengine.generateFile({
+        type: 'docx', outputDir: dir, filename: 'side.docx', data: DOCX,
+        source: { summary: 'Resumen del archivo', areaId: 'a1', chatId: 'c1' },
+      });
+      const side = await docengine.readSourceSidecar(dir, res.filename);
+      assert.equal(side.summary, 'Resumen del archivo');
+      assert.equal(side.areaId, 'a1');
+      assert.equal(side.type, 'docx');
+      assert.deepEqual(side.data, DOCX);
+      assert.ok(Date.parse(side.createdAt) > 0);
+      assert.equal(await docengine.readSourceSidecar(dir, 'missing.docx'), null);
+    });
+
+    it('reports normalization fixes from the engine', async () => {
+      const res = await docengine.generateFile({
+        type: 'docx', outputDir: path.join(tmpDir, 'fixes'), filename: 'md.docx',
+        data: { markdown: '# Hola\n\ntexto' },
+      });
+      assert.ok(res.fixes.includes('docx_markdown_converted'));
+    });
+
+    it('schema errors carry a short human detail', async () => {
+      await assert.rejects(
+        docengine.generateFile({
+          type: 'pptx', outputDir: tmpDir, filename: 'bad.pptx',
+          data: { slides: [{ layout: 'chart', title: 'x', chart: { type: 'radar_3d' } }] },
+        }),
+        (err) => {
+          assert.equal(err.kind, 'schema_error');
+          assert.match(err.detail, /slides\.0/);
+          assert.ok(err.detail.length < 700);
+          return true;
+        }
       );
     });
   });
